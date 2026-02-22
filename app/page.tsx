@@ -9,7 +9,12 @@ type RecipeUnit = "ml" | "un" | "dash" | "drop";
 /** Como precificar um ingrediente */
 type PricingModel = "by_ml" | "by_bottle" | "by_unit";
 
-/** Ingrediente (novo modelo) */
+/** Qual preço mostrar na UI */
+type PriceViewMode = "markup" | "cmv" | "both";
+
+/** Arredondamento psicológico */
+type RoundingMode = "none" | "end_90" | "end_00" | "end_50";
+
 type Ingredient = {
   id: string;
   name: string;
@@ -20,10 +25,10 @@ type Ingredient = {
   costPerMl?: number; // R$/ml
 
   // by_bottle:
-  bottlePrice?: number; // R$ da garrafa
-  bottleMl?: number; // ml nominal (ex 750)
-  yieldMl?: number; // ml utilizável real (ex 720)
-  lossPct?: number; // 0-100, perdas adicionais (opcional)
+  bottlePrice?: number; // R$
+  bottleMl?: number; // ml nominal
+  yieldMl?: number; // ml utilizável real
+  lossPct?: number; // 0-100 perdas adicionais
 
   // by_unit:
   costPerUnit?: number; // R$ por unidade
@@ -42,24 +47,24 @@ type Drink = {
   name: string;
   items: RecipeItem[];
   notes?: string;
+  photoDataUrl?: string; // base64 (data URL) da foto
 };
 
 type Settings = {
   markup: number;
   targetCmv: number; // 0.2 = 20%
-  dashMl: number; // ex 0.9
-  dropMl: number; // ex 0.05 (ajuste ao seu dropper)
+  dashMl: number; // ml por dash (normalmente fracionário)
+  dropMl: number; // ml por gota (normalmente fracionário)
+  priceViewMode: PriceViewMode;
+  roundingMode: RoundingMode; // arredondamento psicológico
 };
 
-const STORAGE_KEY = "mixologia_drink_cost_v2";
+const STORAGE_KEY = "mixologia_drink_cost_v4_menu_rounding";
+
+/* ----------------------------- utils ----------------------------- */
 
 function uid(prefix = "id") {
   return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
-}
-
-function safeNumber(input: string) {
-  const v = Number(input.replace(",", "."));
-  return Number.isFinite(v) ? v : 0;
 }
 
 function formatBRL(value: number) {
@@ -70,7 +75,77 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
-/** Calcula R$/ml do ingrediente conforme modelo */
+/** parse pt-BR input; allow empty */
+function parseNumberLoose(raw: string): number | null {
+  const t = raw.trim();
+  if (!t) return null;
+  const norm = t.replace(/\./g, "").replace(",", "."); // allow 1.234,56
+  const v = Number(norm);
+  return Number.isFinite(v) ? v : null;
+}
+
+/** format number for input */
+function formatFixed(n: number, decimals: number) {
+  return n.toFixed(decimals).replace(".", ",");
+}
+
+/** arredondamento psicológico para preço (sempre para cima ou igual) */
+function applyPsychRounding(price: number, mode: RoundingMode) {
+  if (!Number.isFinite(price)) return 0;
+  if (mode === "none") return price;
+
+  const integer = Math.floor(price);
+  const frac = price - integer;
+
+  if (mode === "end_00") {
+    // próximo inteiro (ou igual)
+    return frac === 0 ? price : integer + 1;
+  }
+
+  const targetFrac = mode === "end_90" ? 0.9 : 0.5;
+  const candidate = integer + targetFrac;
+  if (price <= candidate + 1e-9) return candidate; // já cabe no mesmo inteiro
+  return integer + 1 + targetFrac; // sobe pro próximo
+}
+
+/** compressão das imagens */
+async function fileToDataUrlResized(
+  file: File,
+  opts: { maxWidth: number; maxHeight: number; quality: number }
+): Promise<string> {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Falha ao ler arquivo"));
+    reader.onload = () => resolve(String(reader.result));
+    reader.readAsDataURL(file);
+  });
+
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = () => reject(new Error("Falha ao carregar imagem"));
+    i.src = dataUrl;
+  });
+
+  const { maxWidth, maxHeight, quality } = opts;
+  const ratio = Math.min(maxWidth / img.width, maxHeight / img.height, 1);
+  const w = Math.round(img.width * ratio);
+  const h = Math.round(img.height * ratio);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return dataUrl;
+
+  ctx.drawImage(img, 0, 0, w, h);
+
+  // JPEG costuma ficar bem mais leve que PNG
+  return canvas.toDataURL("image/jpeg", quality);
+}
+
+/* --------------------------- calculations --------------------------- */
+
 function computeCostPerMl(ing: Ingredient): number | null {
   if (ing.pricingModel === "by_ml") {
     const v = ing.costPerMl ?? 0;
@@ -79,23 +154,17 @@ function computeCostPerMl(ing: Ingredient): number | null {
   if (ing.pricingModel === "by_bottle") {
     const price = ing.bottlePrice ?? 0;
     const bottleMl = ing.bottleMl ?? 0;
-    const yieldMl = ing.yieldMl ?? bottleMl; // se não setar yield, usa nominal
+    const yieldMl = ing.yieldMl ?? bottleMl;
     const lossPct = clamp(ing.lossPct ?? 0, 0, 100);
 
     const effectiveYield = yieldMl * (1 - lossPct / 100);
     if (price <= 0 || effectiveYield <= 0) return 0;
-
     return price / effectiveYield;
   }
   return null; // by_unit não tem R$/ml
 }
 
-/** Converte qty+unit da receita para custo em R$ */
-function computeItemCost(
-  item: RecipeItem,
-  ing: Ingredient | undefined,
-  settings: Settings
-): number {
+function computeItemCost(item: RecipeItem, ing: Ingredient | undefined, settings: Settings): number {
   if (!ing) return 0;
 
   if (item.unit === "un") {
@@ -103,7 +172,6 @@ function computeItemCost(
     return item.qty * cpu;
   }
 
-  // tudo que for ml/dash/drop vira ml primeiro
   const ml =
     item.unit === "ml"
       ? item.qty
@@ -112,7 +180,7 @@ function computeItemCost(
       : item.qty * settings.dropMl;
 
   const cpm = computeCostPerMl(ing);
-  if (cpm === null) return 0; // ingrediente por unidade sendo usado como ml/dash/drop -> custo 0 (você pode decidir bloquear)
+  if (cpm === null) return 0;
   return ml * cpm;
 }
 
@@ -125,7 +193,8 @@ function computeDrinkCost(drink: Drink, ingredients: Ingredient[], settings: Set
   return total;
 }
 
-/** CSV helpers (duas abas: ingredients + drinks_items/drinks_meta em um CSV só) */
+/* ------------------------------ CSV ------------------------------ */
+
 function downloadTextFile(filename: string, content: string) {
   const blob = new Blob([content], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -145,7 +214,6 @@ type ExportPayload = {
 };
 
 function exportAsCsv(payload: ExportPayload) {
-  // ingredientes
   const ingredientsRows = payload.ingredients.map((i) => ({
     id: i.id,
     name: i.name,
@@ -159,7 +227,6 @@ function exportAsCsv(payload: ExportPayload) {
     notes: i.notes ?? "",
   }));
 
-  // drinks meta + items (um CSV só, com "kind")
   const drinkRows: any[] = [];
   for (const d of payload.drinks) {
     drinkRows.push({
@@ -175,8 +242,6 @@ function exportAsCsv(payload: ExportPayload) {
       drinkRows.push({
         kind: "item",
         id: d.id,
-        name: "",
-        notes: "",
         ingredientId: it.ingredientId,
         qty: it.qty,
         unit: it.unit,
@@ -191,18 +256,15 @@ function exportAsCsv(payload: ExportPayload) {
       targetCmv: payload.settings.targetCmv,
       dashMl: payload.settings.dashMl,
       dropMl: payload.settings.dropMl,
+      priceViewMode: payload.settings.priceViewMode,
+      roundingMode: payload.settings.roundingMode,
     },
   ];
 
-  const csv1 = Papa.unparse(ingredientsRows);
-  const csv2 = Papa.unparse(drinkRows);
-  const csv3 = Papa.unparse(settingsRow);
-
-  // empacota em “3 CSVs em 1” com separadores fáceis
   const combined =
-    `###INGREDIENTS###\n${csv1}\n\n` +
-    `###DRINKS###\n${csv2}\n\n` +
-    `###SETTINGS###\n${csv3}\n`;
+    `###INGREDIENTS###\n${Papa.unparse(ingredientsRows)}\n\n` +
+    `###DRINKS###\n${Papa.unparse(drinkRows)}\n\n` +
+    `###SETTINGS###\n${Papa.unparse(settingsRow)}\n`;
 
   downloadTextFile("mixologia_export.csv", combined);
 }
@@ -211,7 +273,6 @@ function parseCombinedCsv(text: string): Partial<ExportPayload> {
   const sections = new Map<string, string>();
   const markers = ["###INGREDIENTS###", "###DRINKS###", "###SETTINGS###"];
 
-  // split por marcadores
   let current: string | null = null;
   const lines = text.split(/\r?\n/);
   const buffers: Record<string, string[]> = {};
@@ -235,7 +296,7 @@ function parseCombinedCsv(text: string): Partial<ExportPayload> {
   const ingText = sections.get("###INGREDIENTS###");
   if (ingText) {
     const parsed = Papa.parse<any>(ingText, { header: true, skipEmptyLines: true });
-    const ings: Ingredient[] = (parsed.data || []).map((r) => ({
+    out.ingredients = (parsed.data || []).map((r) => ({
       id: String(r.id || uid("ing")),
       name: String(r.name || "Ingrediente"),
       pricingModel: (r.pricingModel as PricingModel) || "by_bottle",
@@ -246,8 +307,7 @@ function parseCombinedCsv(text: string): Partial<ExportPayload> {
       lossPct: r.lossPct === "" ? undefined : Number(r.lossPct),
       costPerUnit: r.costPerUnit === "" ? undefined : Number(r.costPerUnit),
       notes: r.notes ? String(r.notes) : undefined,
-    }));
-    out.ingredients = ings;
+    })) as Ingredient[];
   }
 
   const drinksText = sections.get("###DRINKS###");
@@ -257,22 +317,19 @@ function parseCombinedCsv(text: string): Partial<ExportPayload> {
 
     const byDrink = new Map<string, Drink>();
     for (const r of rows) {
-      const kind = String(r.kind || "").trim();
+      if (String(r.kind || "").trim() !== "drink") continue;
       const id = String(r.id || "").trim();
       if (!id) continue;
-
-      if (kind === "drink") {
-        byDrink.set(id, {
-          id,
-          name: String(r.name || "Drink"),
-          notes: r.notes ? String(r.notes) : undefined,
-          items: [],
-        });
-      }
+      byDrink.set(id, {
+        id,
+        name: String(r.name || "Drink"),
+        notes: r.notes ? String(r.notes) : undefined,
+        items: [],
+      });
     }
+
     for (const r of rows) {
-      const kind = String(r.kind || "").trim();
-      if (kind !== "item") continue;
+      if (String(r.kind || "").trim() !== "item") continue;
       const id = String(r.id || "").trim();
       const d = byDrink.get(id);
       if (!d) continue;
@@ -298,11 +355,90 @@ function parseCombinedCsv(text: string): Partial<ExportPayload> {
         targetCmv: Number(r.targetCmv ?? 0.2),
         dashMl: Number(r.dashMl ?? 0.9),
         dropMl: Number(r.dropMl ?? 0.05),
+        priceViewMode: (r.priceViewMode as PriceViewMode) || "both",
+        roundingMode: (r.roundingMode as RoundingMode) || "none",
       };
     }
   }
 
   return out;
+}
+
+/* ------------------------- numeric input ------------------------- */
+
+function NumberField(props: {
+  value: number;
+  onCommit: (n: number) => void;
+  decimals: number; // 2 para preço; 0 para ml
+  min?: number;
+  max?: number;
+  style?: React.CSSProperties;
+  inputMode?: "decimal" | "numeric";
+}) {
+  const { value, onCommit, decimals, min, max, style, inputMode } = props;
+  const [text, setText] = useState<string>(formatFixed(value, decimals));
+  const [focused, setFocused] = useState(false);
+
+  // sync from outside when not editing
+  useEffect(() => {
+    if (!focused) setText(formatFixed(value, decimals));
+  }, [value, decimals, focused]);
+
+  const commit = () => {
+    const parsed = parseNumberLoose(text);
+    if (parsed === null) {
+      // volta pro valor atual se vazio/ inválido
+      setText(formatFixed(value, decimals));
+      return;
+    }
+    let n = parsed;
+    if (typeof min === "number") n = Math.max(min, n);
+    if (typeof max === "number") n = Math.min(max, n);
+
+    // normalize decimals
+    const factor = Math.pow(10, decimals);
+    n = Math.round(n * factor) / factor;
+
+    onCommit(n);
+    setText(formatFixed(n, decimals));
+  };
+
+  return (
+    <input
+      style={style}
+      inputMode={inputMode ?? "decimal"}
+      value={text}
+      onFocus={() => setFocused(true)}
+      onBlur={() => {
+        setFocused(false);
+        commit();
+      }}
+      onChange={(e) => setText(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          (e.target as HTMLInputElement).blur();
+        }
+        if (e.key === "Escape") {
+          setText(formatFixed(value, decimals));
+          (e.target as HTMLInputElement).blur();
+        }
+      }}
+    />
+  );
+}
+
+/* ------------------------------ UI ------------------------------ */
+
+function pillStyle(active: boolean): React.CSSProperties {
+  return {
+    padding: "8px 10px",
+    borderRadius: 999,
+    border: "1px solid var(--border)",
+    background: active ? "var(--pillActive)" : "var(--pill)",
+    cursor: "pointer",
+    userSelect: "none",
+    whiteSpace: "nowrap",
+  };
 }
 
 export default function Page() {
@@ -313,9 +449,15 @@ export default function Page() {
     targetCmv: 0.2,
     dashMl: 0.9,
     dropMl: 0.05,
+    priceViewMode: "both",
+    roundingMode: "end_90",
   });
 
-  const [tab, setTab] = useState<"drinks" | "ingredients" | "settings">("drinks");
+  const [tab, setTab] = useState<"carta" | "drinks" | "ingredients" | "settings">("carta");
+  const [activeDrinkId, setActiveDrinkId] = useState<string | null>(null);
+  const [activeIngredientId, setActiveIngredientId] = useState<string | null>(null);
+
+  const [menuSearch, setMenuSearch] = useState("");
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   // load/save
@@ -327,82 +469,119 @@ export default function Page() {
       if (parsed?.ingredients) setIngredients(parsed.ingredients);
       if (parsed?.drinks) setDrinks(parsed.drinks);
       if (parsed?.settings) setSettings(parsed.settings);
+      if (parsed?.activeDrinkId) setActiveDrinkId(parsed.activeDrinkId);
+      if (parsed?.activeIngredientId) setActiveIngredientId(parsed.activeIngredientId);
+      if (parsed?.tab) setTab(parsed.tab);
     } catch {}
   }, []);
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ingredients, drinks, settings }));
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ ingredients, drinks, settings, activeDrinkId, activeIngredientId, tab })
+      );
     } catch {}
-  }, [ingredients, drinks, settings]);
+  }, [ingredients, drinks, settings, activeDrinkId, activeIngredientId, tab]);
 
-  // seed mínimo
+  // seed: 3 drinks
   useEffect(() => {
     if (ingredients.length || drinks.length) return;
 
-    const gin: Ingredient = {
-      id: uid("ing"),
-      name: "Gin (garrafa)",
-      pricingModel: "by_bottle",
-      bottlePrice: 120,
-      bottleMl: 750,
-      yieldMl: 720, // ex: perdas por ficar no fundo etc
-      lossPct: 0,
-    };
-
-    const vermute: Ingredient = {
-      id: uid("ing"),
-      name: "Vermute Rosso (garrafa)",
-      pricingModel: "by_bottle",
-      bottlePrice: 80,
-      bottleMl: 1000,
-      yieldMl: 950,
-      lossPct: 0,
-    };
-
-    const angostura: Ingredient = {
-      id: uid("ing"),
-      name: "Angostura (bitters)",
-      pricingModel: "by_bottle",
-      bottlePrice: 70,
-      bottleMl: 200,
-      yieldMl: 190,
-      lossPct: 0,
-      notes: "Use drop/dash na receita e ajuste Settings (ml por dash/gota) conforme seu padrão real.",
-    };
-
-    const orangePeel: Ingredient = {
-      id: uid("ing"),
-      name: "Casca de laranja (unidade)",
-      pricingModel: "by_unit",
-      costPerUnit: 0.4,
-    };
+    const gin: Ingredient = { id: uid("ing"), name: "Gin (750ml)", pricingModel: "by_bottle", bottlePrice: 120, bottleMl: 750, yieldMl: 720, lossPct: 0 };
+    const vodka: Ingredient = { id: uid("ing"), name: "Vodka (750ml)", pricingModel: "by_bottle", bottlePrice: 95, bottleMl: 750, yieldMl: 720, lossPct: 0 };
+    const campari: Ingredient = { id: uid("ing"), name: "Campari (750ml)", pricingModel: "by_bottle", bottlePrice: 110, bottleMl: 750, yieldMl: 720, lossPct: 0 };
+    const vermuteRosso: Ingredient = { id: uid("ing"), name: "Vermute Rosso (1L)", pricingModel: "by_bottle", bottlePrice: 80, bottleMl: 1000, yieldMl: 950, lossPct: 0 };
+    const lillet: Ingredient = { id: uid("ing"), name: "Lillet Blanc (750ml)", pricingModel: "by_bottle", bottlePrice: 140, bottleMl: 750, yieldMl: 720, lossPct: 0 };
+    const angostura: Ingredient = { id: uid("ing"), name: "Angostura (bitters)", pricingModel: "by_bottle", bottlePrice: 70, bottleMl: 200, yieldMl: 190, lossPct: 0 };
+    const orangePeel: Ingredient = { id: uid("ing"), name: "Casca de laranja (garnish)", pricingModel: "by_unit", costPerUnit: 0.4 };
+    const lemonPeel: Ingredient = { id: uid("ing"), name: "Casca de limão (garnish)", pricingModel: "by_unit", costPerUnit: 0.35 };
 
     const hanky: Drink = {
       id: uid("drink"),
       name: "Hanky Panky",
       items: [
         { ingredientId: gin.id, qty: 45, unit: "ml" },
-        { ingredientId: vermute.id, qty: 45, unit: "ml" },
+        { ingredientId: vermuteRosso.id, qty: 45, unit: "ml" },
         { ingredientId: angostura.id, qty: 1, unit: "dash" },
         { ingredientId: orangePeel.id, qty: 1, unit: "un" },
       ],
     };
 
-    setIngredients([gin, vermute, angostura, orangePeel]);
-    setDrinks([hanky]);
+    const negroni: Drink = {
+      id: uid("drink"),
+      name: "Negroni",
+      items: [
+        { ingredientId: gin.id, qty: 30, unit: "ml" },
+        { ingredientId: campari.id, qty: 30, unit: "ml" },
+        { ingredientId: vermuteRosso.id, qty: 30, unit: "ml" },
+        { ingredientId: orangePeel.id, qty: 1, unit: "un" },
+      ],
+    };
+
+    const vesper: Drink = {
+      id: uid("drink"),
+      name: "Vesper (teste)",
+      items: [
+        { ingredientId: gin.id, qty: 60, unit: "ml" },
+        { ingredientId: vodka.id, qty: 15, unit: "ml" },
+        { ingredientId: lillet.id, qty: 8, unit: "ml" }, // ml inteiro
+        { ingredientId: lemonPeel.id, qty: 1, unit: "un" },
+      ],
+    };
+
+    const ingList = [gin, vodka, campari, vermuteRosso, lillet, angostura, orangePeel, lemonPeel];
+    const drinkList = [hanky, negroni, vesper];
+
+    setIngredients(ingList);
+    setDrinks(drinkList);
+    setActiveDrinkId(drinkList[0].id);
+    setActiveIngredientId(ingList[0].id);
   }, [ingredients.length, drinks.length]);
+
+  // keep active selections valid
+  useEffect(() => {
+    if (!drinks.length) {
+      setActiveDrinkId(null);
+      return;
+    }
+    if (!activeDrinkId || !drinks.some((d) => d.id === activeDrinkId)) {
+      setActiveDrinkId(drinks[0].id);
+    }
+  }, [drinks, activeDrinkId]);
+
+  useEffect(() => {
+    if (!ingredients.length) {
+      setActiveIngredientId(null);
+      return;
+    }
+    if (!activeIngredientId || !ingredients.some((i) => i.id === activeIngredientId)) {
+      setActiveIngredientId(ingredients[0].id);
+    }
+  }, [ingredients, activeIngredientId]);
 
   const ingredientMap = useMemo(() => new Map(ingredients.map((i) => [i.id, i])), [ingredients]);
 
-  const computed = useMemo(() => {
-    return drinks.map((d) => {
+  const computedByDrinkId = useMemo(() => {
+    const map = new Map<string, { cost: number; priceMarkup: number; priceCmv: number }>();
+    for (const d of drinks) {
       const cost = computeDrinkCost(d, ingredients, settings);
       const priceMarkup = cost * settings.markup;
       const priceCmv = settings.targetCmv > 0 ? cost / settings.targetCmv : 0;
-      return { d, cost, priceMarkup, priceCmv };
-    });
+      map.set(d.id, { cost, priceMarkup, priceCmv });
+    }
+    return map;
   }, [drinks, ingredients, settings]);
+
+  const activeDrink = useMemo(
+    () => (activeDrinkId ? drinks.find((d) => d.id === activeDrinkId) ?? null : null),
+    [drinks, activeDrinkId]
+  );
+
+  const activeIngredient = useMemo(
+    () => (activeIngredientId ? ingredients.find((i) => i.id === activeIngredientId) ?? null : null),
+    [ingredients, activeIngredientId]
+  );
 
   // CRUD
   const addIngredient = () => {
@@ -417,6 +596,7 @@ export default function Page() {
     };
     setIngredients((p) => [ing, ...p]);
     setTab("ingredients");
+    setActiveIngredientId(ing.id);
   };
 
   const updateIngredient = (id: string, patch: Partial<Ingredient>) => {
@@ -432,23 +612,22 @@ export default function Page() {
     const d: Drink = { id: uid("drink"), name: "Novo drink", items: [] };
     setDrinks((p) => [d, ...p]);
     setTab("drinks");
+    setActiveDrinkId(d.id);
   };
 
   const updateDrink = (id: string, patch: Partial<Drink>) => {
     setDrinks((p) => p.map((d) => (d.id === id ? { ...d, ...patch } : d)));
   };
 
-  const removeDrink = (id: string) => setDrinks((p) => p.filter((d) => d.id !== id));
+  const removeDrink = (id: string) => {
+    setDrinks((p) => p.filter((d) => d.id !== id));
+  };
 
   const addItemToDrink = (drinkId: string) => {
     const first = ingredients[0];
     if (!first) return;
     setDrinks((p) =>
-      p.map((d) =>
-        d.id === drinkId
-          ? { ...d, items: [...d.items, { ingredientId: first.id, qty: 0, unit: "ml" }] }
-          : d
-      )
+      p.map((d) => (d.id === drinkId ? { ...d, items: [...d.items, { ingredientId: first.id, qty: 0, unit: "ml" }] } : d))
     );
   };
 
@@ -475,299 +654,677 @@ export default function Page() {
   const onImportFile = async (file: File) => {
     const text = await file.text();
     const parsed = parseCombinedCsv(text);
-
     if (parsed.ingredients) setIngredients(parsed.ingredients);
     if (parsed.drinks) setDrinks(parsed.drinks);
     if (parsed.settings) setSettings(parsed.settings);
   };
 
-  // UI helpers
-  const box: React.CSSProperties = { border: "1px solid #e6e6e6", borderRadius: 14, padding: 14, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" };
-  const btn: React.CSSProperties = { padding: "8px 12px", borderRadius: 10, border: "1px solid #ddd", background: "#fff", cursor: "pointer" };
-  const btnDanger: React.CSSProperties = { ...btn, borderColor: "#f2c2c2", background: "#fff5f5" };
-  const input: React.CSSProperties = { width: "100%", padding: 8, borderRadius: 10, border: "1px solid #ddd" };
-  const small: React.CSSProperties = { fontSize: 12, opacity: 0.8 };
-  const tabBtn = (active: boolean): React.CSSProperties => ({ ...btn, background: active ? "#111" : "#fff", color: active ? "#fff" : "#111" });
+  /* ------------------------------ Theme ------------------------------ */
+
+  const themeVars: React.CSSProperties = {
+    ["--bg" as any]: "#fbf7f0",
+    ["--panel" as any]: "#fffdf9",
+    ["--panel2" as any]: "#fff7ee",
+    ["--pill" as any]: "#fff3e9",
+    ["--pillActive" as any]: "#f2f7ff",
+    ["--ink" as any]: "#2b2b2b",
+    ["--muted" as any]: "#6a6a6a",
+    ["--border" as any]: "#e7e1d8",
+    ["--shadow" as any]: "0 6px 24px rgba(30, 30, 30, 0.06)",
+    ["--btn" as any]: "#f6efe6",
+    ["--danger" as any]: "#fff0f0",
+    ["--dangerBorder" as any]: "#f2caca",
+    ["--focus" as any]: "rgba(109, 157, 255, 0.35)",
+  };
+
+  const page: React.CSSProperties = {
+    ...themeVars,
+    background: "var(--bg)",
+    minHeight: "100vh",
+    color: "var(--ink)",
+    padding: 24,
+    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+  };
+
+  const container: React.CSSProperties = { maxWidth: 1160, margin: "0 auto" };
+
+  const card: React.CSSProperties = {
+    background: "var(--panel)",
+    border: "1px solid var(--border)",
+    borderRadius: 18,
+    padding: 16,
+    boxShadow: "var(--shadow)",
+  };
+
+  const headerCard: React.CSSProperties = {
+    ...card,
+    background: "linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%)",
+  };
+
+  const btn: React.CSSProperties = {
+    padding: "10px 12px",
+    borderRadius: 12,
+    border: "1px solid var(--border)",
+    background: "var(--btn)",
+    cursor: "pointer",
+  };
+
+  const btnDanger: React.CSSProperties = {
+    ...btn,
+    background: "var(--danger)",
+    borderColor: "var(--dangerBorder)",
+  };
+
+  const input: React.CSSProperties = {
+    width: "100%",
+    padding: 10,
+    borderRadius: 12,
+    border: "1px solid var(--border)",
+    background: "white",
+    outline: "none",
+  };
+
+  const small: React.CSSProperties = { fontSize: 12, color: "var(--muted)" };
+
+  const topTab = (active: boolean): React.CSSProperties => ({
+    ...btn,
+    background: active ? "var(--pillActive)" : "var(--pill)",
+  });
+
+  const focusStyle = `
+    input:focus, textarea:focus, select:focus {
+      box-shadow: 0 0 0 4px var(--focus);
+      border-color: #b8ccff;
+    }
+  `;
+
+  /* ------------------------------ Views ------------------------------ */
+
+  function getFinalPriceForDrink(dId: string): { label: string; value: number }[] {
+    const c = computedByDrinkId.get(dId);
+    if (!c) return [];
+
+    const out: { label: string; value: number }[] = [];
+
+    if (settings.priceViewMode === "markup" || settings.priceViewMode === "both") {
+      out.push({ label: `Markup ${settings.markup}x`, value: c.priceMarkup });
+    }
+    if (settings.priceViewMode === "cmv" || settings.priceViewMode === "both") {
+      out.push({ label: `CMV ${Math.round(settings.targetCmv * 100)}%`, value: c.priceCmv });
+    }
+
+    return out.map((x) => ({ ...x, value: applyPsychRounding(x.value, settings.roundingMode) }));
+  }
+
+  const cartaRows = useMemo(() => {
+    const q = menuSearch.trim().toLowerCase();
+    return [...drinks]
+      .filter((d) => (q ? d.name.toLowerCase().includes(q) : true))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((d) => ({ d, prices: getFinalPriceForDrink(d.id) }));
+  }, [drinks, menuSearch, computedByDrinkId, settings.priceViewMode, settings.roundingMode, settings.markup, settings.targetCmv]);
 
   return (
-    <div style={{ maxWidth: 1120, margin: "0 auto", padding: 24, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", marginBottom: 14 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 22 }}>Custos de drinks (V2: garrafa+yields + dash/gota + CSV)</h1>
-          <div style={small}>Padrão: salva no navegador. CSV: exporta/importa para compartilhar.</div>
-        </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-          <button style={btn} onClick={addDrink}>+ Drink</button>
-          <button style={btn} onClick={addIngredient}>+ Ingrediente</button>
+    <div style={page}>
+      <style>{focusStyle}</style>
 
-          <button
-            style={btn}
-            onClick={() => exportAsCsv({ ingredients, drinks, settings })}
-          >
-            Exportar CSV
-          </button>
-
-          <button style={btn} onClick={() => fileRef.current?.click()}>
-            Importar CSV
-          </button>
-
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".csv,text/csv"
-            style={{ display: "none" }}
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) onImportFile(f);
-              e.currentTarget.value = "";
-            }}
-          />
-        </div>
-      </div>
-
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
-        <button style={tabBtn(tab === "drinks")} onClick={() => setTab("drinks")}>Drinks</button>
-        <button style={tabBtn(tab === "ingredients")} onClick={() => setTab("ingredients")}>Ingredientes</button>
-        <button style={tabBtn(tab === "settings")} onClick={() => setTab("settings")}>Configurações</button>
-      </div>
-
-      {tab === "settings" && (
-        <div style={box}>
-          <h2 style={{ marginTop: 0, fontSize: 16 }}>Conversões e precificação</h2>
-
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
+      <div style={container}>
+        <div style={{ ...headerCard, marginBottom: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
             <div>
-              <div style={small}>Markup (x)</div>
-              <input style={input} inputMode="decimal" value={String(settings.markup)} onChange={(e) => setSettings(s => ({ ...s, markup: clamp(safeNumber(e.target.value), 0, 100) }))} />
+              <h1 style={{ margin: 0, fontSize: 22, letterSpacing: -0.2 }}>Custos de Drinks</h1>
+              <div style={small}>Aba Carta • Arredondamento psicológico • Inputs numéricos editáveis</div>
             </div>
 
-            <div>
-              <div style={small}>CMV alvo (%)</div>
-              <input style={input} inputMode="decimal" value={String(Math.round(settings.targetCmv * 100))} onChange={(e) => setSettings(s => ({ ...s, targetCmv: clamp(safeNumber(e.target.value), 1, 100) / 100 }))} />
-            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <button style={btn} onClick={addDrink}>+ Drink</button>
+              <button style={btn} onClick={addIngredient}>+ Ingrediente</button>
 
-            <div>
-              <div style={small}>1 dash = (ml)</div>
-              <input style={input} inputMode="decimal" value={String(settings.dashMl)} onChange={(e) => setSettings(s => ({ ...s, dashMl: clamp(safeNumber(e.target.value), 0, 10) }))} />
-            </div>
+              <button style={btn} onClick={() => exportAsCsv({ ingredients, drinks, settings })}>
+                Exportar CSV
+              </button>
 
-            <div>
-              <div style={small}>1 gota = (ml)</div>
-              <input style={input} inputMode="decimal" value={String(settings.dropMl)} onChange={(e) => setSettings(s => ({ ...s, dropMl: clamp(safeNumber(e.target.value), 0, 1) }))} />
+              <button style={btn} onClick={() => fileRef.current?.click()}>
+                Importar CSV
+              </button>
+
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".csv,text/csv"
+                style={{ display: "none" }}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) onImportFile(f);
+                  e.currentTarget.value = "";
+                }}
+              />
             </div>
           </div>
 
-          <hr style={{ border: 0, borderTop: "1px solid #eee", margin: "14px 0" }} />
-
-          <button
-            style={btnDanger}
-            onClick={() => {
-              if (confirm("Apagar todos os dados salvos no navegador?")) {
-                localStorage.removeItem(STORAGE_KEY);
-                setIngredients([]);
-                setDrinks([]);
-                setSettings({ markup: 4, targetCmv: 0.2, dashMl: 0.9, dropMl: 0.05 });
-              }
-            }}
-          >
-            Resetar tudo
-          </button>
+          <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+            <button style={topTab(tab === "carta")} onClick={() => setTab("carta")}>Carta</button>
+            <button style={topTab(tab === "drinks")} onClick={() => setTab("drinks")}>Drinks</button>
+            <button style={topTab(tab === "ingredients")} onClick={() => setTab("ingredients")}>Ingredientes</button>
+            <button style={topTab(tab === "settings")} onClick={() => setTab("settings")}>Configurações</button>
+          </div>
         </div>
-      )}
 
-      {tab === "ingredients" && (
-        <div style={box}>
-          <h2 style={{ marginTop: 0, fontSize: 16 }}>Ingredientes</h2>
-
-          {ingredients.length === 0 ? (
-            <div style={{ padding: 14, border: "1px dashed #ddd", borderRadius: 14, opacity: 0.8 }}>
-              Sem ingredientes. Clique em “+ Ingrediente”.
+        {/* -------------------- CARTA -------------------- */}
+        {tab === "carta" && (
+          <div style={card}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+              <h2 style={{ marginTop: 0, fontSize: 16, marginBottom: 10 }}>Carta</h2>
+              <div style={small}>
+                Preço exibido: {settings.priceViewMode === "markup" ? "Markup" : settings.priceViewMode === "cmv" ? "CMV" : "Ambos"} •
+                Arredondamento: {settings.roundingMode === "none" ? "Nenhum" : settings.roundingMode === "end_90" ? ",90" : settings.roundingMode === "end_00" ? ",00" : ",50"}
+              </div>
             </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {ingredients.map((ing) => {
-                const cpm = computeCostPerMl(ing);
-                return (
-                  <div key={ing.id} style={{ border: "1px solid #eee", borderRadius: 14, padding: 12 }}>
+
+            <input
+              style={input}
+              placeholder="Buscar drink..."
+              value={menuSearch}
+              onChange={(e) => setMenuSearch(e.target.value)}
+            />
+
+            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+              {cartaRows.map(({ d, prices }) => (
+                <div key={d.id} style={{ border: "1px solid var(--border)", borderRadius: 16, padding: 12, background: "white" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+  {d.photoDataUrl ? (
+    <img
+      src={d.photoDataUrl}
+      alt=""
+      style={{
+        width: 56,
+        height: 56,
+        borderRadius: 14,
+        objectFit: "cover",
+        border: "1px solid var(--border)",
+      }}
+    />
+  ) : null}
+
+  <div>
+    <div style={{ fontSize: 16, fontWeight: 650 }}>
+      {d.name}
+    </div>
+    {d.notes ? <div style={small}>{d.notes}</div> : null}
+  </div>
+</div>
+
+                    <div style={{ display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      {prices.map((p) => (
+                        <div key={p.label} style={{ textAlign: "right" }}>
+                          <div style={small}>{p.label}</div>
+                          <div style={{ fontSize: 18, fontWeight: 650 }}>{formatBRL(p.value)}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+
+              {cartaRows.length === 0 && (
+                <div style={{ padding: 14, border: "1px dashed var(--border)", borderRadius: 14, color: "var(--muted)" }}>
+                  Nenhum drink encontrado.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* -------------------- SETTINGS -------------------- */}
+        {tab === "settings" && (
+          <div style={card}>
+            <h2 style={{ marginTop: 0, fontSize: 16 }}>Configurações</h2>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
+              <div>
+                <div style={small}>Markup (x)</div>
+                <NumberField
+                  style={input}
+                  value={settings.markup}
+                  decimals={2} // preço/regra: 2 casas para valores monetários; markup pode ser fracionário
+                  min={0}
+                  max={100}
+                  onCommit={(n) => setSettings((s) => ({ ...s, markup: n }))}
+                />
+              </div>
+
+              <div>
+                <div style={small}>CMV alvo (%)</div>
+                <NumberField
+                  style={input}
+                  value={Math.round(settings.targetCmv * 100)}
+                  decimals={0} // percentual inteiro
+                  min={1}
+                  max={100}
+                  inputMode="numeric"
+                  onCommit={(n) => setSettings((s) => ({ ...s, targetCmv: clamp(n, 1, 100) / 100 }))}
+                />
+              </div>
+
+              <div>
+                <div style={small}>1 dash = (ml)</div>
+                <NumberField
+                  style={input}
+                  value={settings.dashMl}
+                  decimals={2}
+                  min={0}
+                  max={10}
+                  onCommit={(n) => setSettings((s) => ({ ...s, dashMl: n }))}
+                />
+              </div>
+
+              <div>
+                <div style={small}>1 gota = (ml)</div>
+                <NumberField
+                  style={input}
+                  value={settings.dropMl}
+                  decimals={2}
+                  min={0}
+                  max={1}
+                  onCommit={(n) => setSettings((s) => ({ ...s, dropMl: n }))}
+                />
+              </div>
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              <div style={{ ...small, marginBottom: 6 }}>Preço final exibido</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <div style={pillStyle(settings.priceViewMode === "markup")} onClick={() => setSettings((s) => ({ ...s, priceViewMode: "markup" }))}>Markup</div>
+                <div style={pillStyle(settings.priceViewMode === "cmv")} onClick={() => setSettings((s) => ({ ...s, priceViewMode: "cmv" }))}>CMV alvo</div>
+                <div style={pillStyle(settings.priceViewMode === "both")} onClick={() => setSettings((s) => ({ ...s, priceViewMode: "both" }))}>Ambos</div>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 12 }}>
+              <div style={{ ...small, marginBottom: 6 }}>Arredondamento psicológico (Carta e preços)</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <div style={pillStyle(settings.roundingMode === "none")} onClick={() => setSettings((s) => ({ ...s, roundingMode: "none" }))}>Nenhum</div>
+                <div style={pillStyle(settings.roundingMode === "end_90")} onClick={() => setSettings((s) => ({ ...s, roundingMode: "end_90" }))}>Terminar em ,90</div>
+                <div style={pillStyle(settings.roundingMode === "end_50")} onClick={() => setSettings((s) => ({ ...s, roundingMode: "end_50" }))}>Terminar em ,50</div>
+                <div style={pillStyle(settings.roundingMode === "end_00")} onClick={() => setSettings((s) => ({ ...s, roundingMode: "end_00" }))}>Terminar em ,00</div>
+              </div>
+            </div>
+
+            <hr style={{ border: 0, borderTop: "1px solid var(--border)", margin: "14px 0" }} />
+
+            <button
+              style={btnDanger}
+              onClick={() => {
+                if (confirm("Apagar todos os dados salvos no navegador?")) {
+                  localStorage.removeItem(STORAGE_KEY);
+                  setIngredients([]);
+                  setDrinks([]);
+                  setSettings({ markup: 4, targetCmv: 0.2, dashMl: 0.9, dropMl: 0.05, priceViewMode: "both", roundingMode: "end_90" });
+                  setActiveDrinkId(null);
+                  setActiveIngredientId(null);
+                  setTab("carta");
+                }
+              }}
+            >
+              Resetar tudo
+            </button>
+          </div>
+        )}
+
+        {/* -------------------- DRINKS -------------------- */}
+        {tab === "drinks" && (
+          <div style={card}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+              <h2 style={{ marginTop: 0, fontSize: 16, marginBottom: 10 }}>Drinks</h2>
+              <div style={small}>{drinks.length} drink(s)</div>
+            </div>
+
+            {drinks.length === 0 ? (
+              <div style={{ padding: 14, border: "1px dashed var(--border)", borderRadius: 14, color: "var(--muted)" }}>
+                Sem drinks. Clique em “+ Drink”.
+              </div>
+            ) : (
+              <>
+                <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 6, marginBottom: 10 }}>
+                  {drinks.map((d) => (
+                    <div key={d.id} style={pillStyle(d.id === activeDrinkId)} onClick={() => setActiveDrinkId(d.id)}>
+                      {d.name || "Sem nome"}
+                    </div>
+                  ))}
+                </div>
+
+                {activeDrink && (
+                  <div style={{ background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: 16, padding: 12 }}>
+                    <input
+                      style={input}
+                      value={activeDrink.name}
+                      onChange={(e) => updateDrink(activeDrink.id, { name: e.target.value })}
+                      placeholder="Nome do drink"
+                    />
+
+                    {/* Foto do drink */}
+<div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+  <div
+    style={{
+      width: 140,
+      height: 140,
+      borderRadius: 16,
+      border: "1px solid var(--border)",
+      background: "white",
+      overflow: "hidden",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      color: "var(--muted)",
+      fontSize: 12,
+    }}
+  >
+    {activeDrink.photoDataUrl ? (
+      <img
+        src={activeDrink.photoDataUrl}
+        alt="Foto do drink"
+        style={{ width: "100%", height: "100%", objectFit: "cover" }}
+      />
+    ) : (
+      "Sem foto"
+    )}
+  </div>
+
+  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+    <label style={{ ...btn, display: "inline-block", cursor: "pointer" }}>
+      Inserir foto
+      <input
+        type="file"
+        accept="image/*"
+        style={{ display: "none" }}
+        onChange={async (e) => {
+          const f = e.target.files?.[0];
+          if (!f) return;
+
+          const reader = new FileReader();
+          reader.onload = () => {
+            updateDrink(activeDrink.id, {
+              photoDataUrl: reader.result as string,
+            });
+          };
+          reader.readAsDataURL(f);
+        }}
+      />
+    </label>
+
+    <button
+      style={btnDanger}
+      disabled={!activeDrink.photoDataUrl}
+      onClick={() => updateDrink(activeDrink.id, { photoDataUrl: undefined })}
+    >
+      Remover foto
+    </button>
+  </div>
+</div>
+
+                    {/* KPIs */}
+                    {(() => {
+                      const c = computedByDrinkId.get(activeDrink.id);
+                      if (!c) return null;
+
+                      const cost = c.cost;
+                      const markupP = applyPsychRounding(c.priceMarkup, settings.roundingMode);
+                      const cmvP = applyPsychRounding(c.priceCmv, settings.roundingMode);
+
+                      const blocks: React.ReactNode[] = [
+                        <div key="cost" style={{ border: "1px solid var(--border)", borderRadius: 14, padding: 12, background: "white" }}>
+                          <div style={small}>Custo</div>
+                          <div style={{ fontSize: 18 }}>{formatBRL(cost)}</div>
+                        </div>,
+                      ];
+
+                      if (settings.priceViewMode === "markup" || settings.priceViewMode === "both") {
+                        blocks.push(
+                          <div key="m" style={{ border: "1px solid var(--border)", borderRadius: 14, padding: 12, background: "white" }}>
+                            <div style={small}>Preço (markup {settings.markup}x) • {settings.roundingMode === "none" ? "sem arred." : "arred."}</div>
+                            <div style={{ fontSize: 18 }}>{formatBRL(markupP)}</div>
+                          </div>
+                        );
+                      }
+
+                      if (settings.priceViewMode === "cmv" || settings.priceViewMode === "both") {
+                        blocks.push(
+                          <div key="c" style={{ border: "1px solid var(--border)", borderRadius: 14, padding: 12, background: "white" }}>
+                            <div style={small}>Preço (CMV {Math.round(settings.targetCmv * 100)}%) • {settings.roundingMode === "none" ? "sem arred." : "arred."}</div>
+                            <div style={{ fontSize: 18 }}>{formatBRL(cmvP)}</div>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div style={{ display: "grid", gridTemplateColumns: `repeat(${blocks.length}, minmax(0, 1fr))`, gap: 10, marginTop: 10 }}>
+                          {blocks}
+                        </div>
+                      );
+                    })()}
+
+                    <hr style={{ border: 0, borderTop: "1px solid var(--border)", margin: "12px 0" }} />
+
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                      <strong style={{ fontSize: 14 }}>Receita</strong>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button style={btn} onClick={() => addItemToDrink(activeDrink.id)} disabled={!ingredients.length}>+ Item</button>
+                        <button style={btnDanger} onClick={() => removeDrink(activeDrink.id)}>Remover drink</button>
+                      </div>
+                    </div>
+
+                    {activeDrink.items.length === 0 ? (
+                      <div style={{ marginTop: 10, padding: 14, border: "1px dashed var(--border)", borderRadius: 14, color: "var(--muted)" }}>
+                        Sem itens. Clique em “+ Item”.
+                      </div>
+                    ) : (
+                      <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                        {activeDrink.items.map((it, idx) => {
+                          const ing = ingredientMap.get(it.ingredientId);
+                          const cpm = ing ? computeCostPerMl(ing) : null;
+                          const perUnit = ing?.pricingModel === "by_unit" ? (ing.costPerUnit ?? 0) : 0;
+                          const hint = it.unit === "un" ? `${formatBRL(perUnit)} / un` : `${formatBRL(cpm ?? 0)} / ml`;
+
+                          return (
+                            <div key={`${activeDrink.id}_${idx}`} style={{ display: "grid", gridTemplateColumns: "2fr 0.8fr 0.9fr 1fr 0.8fr", gap: 8, alignItems: "center" }}>
+                              <select style={input} value={it.ingredientId} onChange={(e) => updateItem(activeDrink.id, idx, { ingredientId: e.target.value })}>
+                                {ingredients.map((i) => (
+                                  <option key={i.id} value={i.id}>{i.name}</option>
+                                ))}
+                              </select>
+
+                              <NumberField
+                                style={input}
+                                value={it.qty}
+                                decimals={it.unit === "ml" ? 0 : 2} // ml inteiro; dash/gota podem ser fracionários em quantidade
+                                min={0}
+                                onCommit={(n) => updateItem(activeDrink.id, idx, { qty: n })}
+                              />
+
+                              <select style={input} value={it.unit} onChange={(e) => updateItem(activeDrink.id, idx, { unit: e.target.value as RecipeUnit })}>
+                                <option value="ml">ml</option>
+                                <option value="dash">dash</option>
+                                <option value="drop">gota</option>
+                                <option value="un">un</option>
+                              </select>
+
+                              <div style={small}>{hint}</div>
+
+                              <button style={btnDanger} onClick={() => removeItem(activeDrink.id, idx)}>Remover</button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    <div style={{ marginTop: 10 }}>
+                      <textarea
+                        style={{ ...input, minHeight: 70 }}
+                        value={activeDrink.notes ?? ""}
+                        placeholder="Notas (opcional)"
+                        onChange={(e) => updateDrink(activeDrink.id, { notes: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* -------------------- INGREDIENTS -------------------- */}
+        {tab === "ingredients" && (
+          <div style={card}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+              <h2 style={{ marginTop: 0, fontSize: 16, marginBottom: 10 }}>Ingredientes</h2>
+              <div style={small}>{ingredients.length} ingrediente(s)</div>
+            </div>
+
+            {ingredients.length === 0 ? (
+              <div style={{ padding: 14, border: "1px dashed var(--border)", borderRadius: 14, color: "var(--muted)" }}>
+                Sem ingredientes. Clique em “+ Ingrediente”.
+              </div>
+            ) : (
+              <>
+                <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 6, marginBottom: 10 }}>
+                  {ingredients.map((i) => (
+                    <div key={i.id} style={pillStyle(i.id === activeIngredientId)} onClick={() => setActiveIngredientId(i.id)}>
+                      {i.name || "Sem nome"}
+                    </div>
+                  ))}
+                </div>
+
+                {activeIngredient && (
+                  <div style={{ background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: 16, padding: 12 }}>
                     <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10 }}>
-                      <input style={input} value={ing.name} onChange={(e) => updateIngredient(ing.id, { name: e.target.value })} />
+                      <input
+                        style={input}
+                        value={activeIngredient.name}
+                        onChange={(e) => updateIngredient(activeIngredient.id, { name: e.target.value })}
+                        placeholder="Nome do ingrediente"
+                      />
+
                       <select
                         style={input}
-                        value={ing.pricingModel}
-                        onChange={(e) => updateIngredient(ing.id, { pricingModel: e.target.value as PricingModel })}
+                        value={activeIngredient.pricingModel}
+                        onChange={(e) => updateIngredient(activeIngredient.id, { pricingModel: e.target.value as PricingModel })}
                       >
                         <option value="by_bottle">Por garrafa (R$ + ml + yield)</option>
                         <option value="by_ml">Direto R$/ml</option>
-                        <option value="by_unit">Por unidade (garnish, etc.)</option>
+                        <option value="by_unit">Por unidade</option>
                       </select>
                     </div>
 
-                    {ing.pricingModel === "by_bottle" && (
+                    {activeIngredient.pricingModel === "by_bottle" && (
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10, marginTop: 10 }}>
                         <div>
                           <div style={small}>Preço (R$)</div>
-                          <input style={input} inputMode="decimal" value={String(ing.bottlePrice ?? "")} onChange={(e) => updateIngredient(ing.id, { bottlePrice: safeNumber(e.target.value) })} />
+                          <NumberField
+                            style={input}
+                            value={activeIngredient.bottlePrice ?? 0}
+                            decimals={2}
+                            min={0}
+                            onCommit={(n) => updateIngredient(activeIngredient.id, { bottlePrice: n })}
+                          />
                         </div>
+
                         <div>
                           <div style={small}>ml nominal</div>
-                          <input style={input} inputMode="decimal" value={String(ing.bottleMl ?? "")} onChange={(e) => updateIngredient(ing.id, { bottleMl: safeNumber(e.target.value) })} />
+                          <NumberField
+                            style={input}
+                            value={activeIngredient.bottleMl ?? 0}
+                            decimals={0}
+                            min={0}
+                            inputMode="numeric"
+                            onCommit={(n) => updateIngredient(activeIngredient.id, { bottleMl: n })}
+                          />
                         </div>
+
                         <div>
                           <div style={small}>yield real (ml)</div>
-                          <input style={input} inputMode="decimal" value={String(ing.yieldMl ?? "")} onChange={(e) => updateIngredient(ing.id, { yieldMl: safeNumber(e.target.value) })} />
+                          <NumberField
+                            style={input}
+                            value={activeIngredient.yieldMl ?? (activeIngredient.bottleMl ?? 0)}
+                            decimals={0}
+                            min={0}
+                            inputMode="numeric"
+                            onCommit={(n) => updateIngredient(activeIngredient.id, { yieldMl: n })}
+                          />
                         </div>
+
                         <div>
                           <div style={small}>perdas (%)</div>
-                          <input style={input} inputMode="decimal" value={String(ing.lossPct ?? 0)} onChange={(e) => updateIngredient(ing.id, { lossPct: safeNumber(e.target.value) })} />
+                          <NumberField
+                            style={input}
+                            value={activeIngredient.lossPct ?? 0}
+                            decimals={0}
+                            min={0}
+                            max={100}
+                            inputMode="numeric"
+                            onCommit={(n) => updateIngredient(activeIngredient.id, { lossPct: n })}
+                          />
                         </div>
-                        <div style={{ gridColumn: "1 / -1" }}>
+
+                        <div style={{ gridColumn: "1 / -1", background: "white", border: "1px solid var(--border)", borderRadius: 14, padding: 12 }}>
                           <div style={small}>R$/ml calculado</div>
-                          <div style={{ fontSize: 16 }}>{formatBRL(cpm ?? 0)} / ml</div>
+                          <div style={{ fontSize: 16 }}>{formatBRL(computeCostPerMl(activeIngredient) ?? 0)} / ml</div>
                         </div>
                       </div>
                     )}
 
-                    {ing.pricingModel === "by_ml" && (
+                    {activeIngredient.pricingModel === "by_ml" && (
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
                         <div>
                           <div style={small}>R$/ml</div>
-                          <input style={input} inputMode="decimal" value={String(ing.costPerMl ?? "")} onChange={(e) => updateIngredient(ing.id, { costPerMl: safeNumber(e.target.value) })} />
+                          <NumberField
+                            style={input}
+                            value={activeIngredient.costPerMl ?? 0}
+                            decimals={2}
+                            min={0}
+                            onCommit={(n) => updateIngredient(activeIngredient.id, { costPerMl: n })}
+                          />
                         </div>
                         <div style={{ display: "flex", alignItems: "flex-end" }}>
-                          <div style={{ fontSize: 16 }}>{formatBRL(computeCostPerMl(ing) ?? 0)} / ml</div>
+                          <div style={{ fontSize: 16 }}>{formatBRL(computeCostPerMl(activeIngredient) ?? 0)} / ml</div>
                         </div>
                       </div>
                     )}
 
-                    {ing.pricingModel === "by_unit" && (
+                    {activeIngredient.pricingModel === "by_unit" && (
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
                         <div>
                           <div style={small}>R$ por unidade</div>
-                          <input style={input} inputMode="decimal" value={String(ing.costPerUnit ?? "")} onChange={(e) => updateIngredient(ing.id, { costPerUnit: safeNumber(e.target.value) })} />
+                          <NumberField
+                            style={input}
+                            value={activeIngredient.costPerUnit ?? 0}
+                            decimals={2}
+                            min={0}
+                            onCommit={(n) => updateIngredient(activeIngredient.id, { costPerUnit: n })}
+                          />
                         </div>
                       </div>
                     )}
 
                     <div style={{ marginTop: 10 }}>
-                      <textarea style={{ ...input, minHeight: 60 }} value={ing.notes ?? ""} placeholder="Notas (opcional)" onChange={(e) => updateIngredient(ing.id, { notes: e.target.value })} />
+                      <textarea
+                        style={{ ...input, minHeight: 70 }}
+                        value={activeIngredient.notes ?? ""}
+                        placeholder="Notas (opcional)"
+                        onChange={(e) => updateIngredient(activeIngredient.id, { notes: e.target.value })}
+                      />
                     </div>
 
                     <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end" }}>
-                      <button style={btnDanger} onClick={() => removeIngredient(ing.id)}>Remover</button>
+                      <button style={btnDanger} onClick={() => removeIngredient(activeIngredient.id)}>Remover ingrediente</button>
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      )}
-
-      {tab === "drinks" && (
-        <div style={box}>
-          <h2 style={{ marginTop: 0, fontSize: 16 }}>Drinks</h2>
-
-          {computed.length === 0 ? (
-            <div style={{ padding: 14, border: "1px dashed #ddd", borderRadius: 14, opacity: 0.8 }}>
-              Sem drinks. Clique em “+ Drink”.
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {computed.map(({ d, cost, priceMarkup, priceCmv }) => (
-                <div key={d.id} style={{ border: "1px solid #eee", borderRadius: 14, padding: 12 }}>
-                  <input style={input} value={d.name} onChange={(e) => updateDrink(d.id, { name: e.target.value })} />
-
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10, marginTop: 10 }}>
-                    <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
-                      <div style={small}>Custo</div>
-                      <div style={{ fontSize: 18 }}>{formatBRL(cost)}</div>
-                    </div>
-                    <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
-                      <div style={small}>Preço (markup {settings.markup}x)</div>
-                      <div style={{ fontSize: 18 }}>{formatBRL(priceMarkup)}</div>
-                    </div>
-                    <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
-                      <div style={small}>Preço (CMV {Math.round(settings.targetCmv * 100)}%)</div>
-                      <div style={{ fontSize: 18 }}>{formatBRL(priceCmv)}</div>
-                    </div>
-                  </div>
-
-                  <hr style={{ border: 0, borderTop: "1px solid #eee", margin: "12px 0" }} />
-
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                    <strong>Receita</strong>
-                    <div style={{ display: "flex", gap: 8 }}>
-                      <button style={btn} onClick={() => addItemToDrink(d.id)} disabled={!ingredients.length}>+ Item</button>
-                      <button style={btnDanger} onClick={() => removeDrink(d.id)}>Remover drink</button>
-                    </div>
-                  </div>
-
-                  {d.items.length === 0 ? (
-                    <div style={{ marginTop: 10, padding: 14, border: "1px dashed #ddd", borderRadius: 14, opacity: 0.8 }}>
-                      Sem itens. Clique em “+ Item”.
-                    </div>
-                  ) : (
-                    <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-                      {d.items.map((it, idx) => {
-                        const ing = ingredientMap.get(it.ingredientId);
-                        const cpm = ing ? computeCostPerMl(ing) : null;
-                        const perUnit = ing?.pricingModel === "by_unit" ? (ing.costPerUnit ?? 0) : 0;
-
-                        const hint =
-                          it.unit === "un"
-                            ? `${formatBRL(perUnit)} / un`
-                            : `${formatBRL(cpm ?? 0)} / ml`;
-
-                        return (
-                          <div key={`${d.id}_${idx}`} style={{ display: "grid", gridTemplateColumns: "2fr 0.8fr 0.8fr 1fr 0.8fr", gap: 8, alignItems: "center" }}>
-                            <select
-                              style={input}
-                              value={it.ingredientId}
-                              onChange={(e) => updateItem(d.id, idx, { ingredientId: e.target.value })}
-                            >
-                              {ingredients.map((i) => (
-                                <option key={i.id} value={i.id}>
-                                  {i.name}
-                                </option>
-                              ))}
-                            </select>
-
-                            <input
-                              style={input}
-                              inputMode="decimal"
-                              value={String(it.qty)}
-                              onChange={(e) => updateItem(d.id, idx, { qty: safeNumber(e.target.value) })}
-                            />
-
-                            <select
-                              style={input}
-                              value={it.unit}
-                              onChange={(e) => updateItem(d.id, idx, { unit: e.target.value as RecipeUnit })}
-                            >
-                              <option value="ml">ml</option>
-                              <option value="dash">dash</option>
-                              <option value="drop">gota</option>
-                              <option value="un">un</option>
-                            </select>
-
-                            <div style={small}>{hint}</div>
-
-                            <button style={btnDanger} onClick={() => removeItem(d.id, idx)}>Remover</button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-
-                  <div style={{ marginTop: 10 }}>
-                    <textarea style={{ ...input, minHeight: 60 }} value={d.notes ?? ""} placeholder="Notas (opcional)" onChange={(e) => updateDrink(d.id, { notes: e.target.value })} />
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
