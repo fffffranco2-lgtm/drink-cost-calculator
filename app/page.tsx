@@ -75,6 +75,20 @@ function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 
+function makeCopyName(baseName: string, existingNames: string[]) {
+  const trimmed = baseName.trim();
+  const normalized = trimmed.replace(/\s*\(cópia(\s\d+)?\)$/i, "");
+  const root = normalized || "Sem nome";
+
+  const nameSet = new Set(existingNames);
+  const firstCopy = `${root} (cópia)`;
+  if (!nameSet.has(firstCopy)) return firstCopy;
+
+  let index = 2;
+  while (nameSet.has(`${root} (cópia ${index})`)) index += 1;
+  return `${root} (cópia ${index})`;
+}
+
 /** parse pt-BR input; allow empty */
 function parseNumberLoose(raw: string): number | null {
   const t = raw.trim();
@@ -608,11 +622,52 @@ export default function Page() {
     setDrinks((p) => p.map((d) => ({ ...d, items: d.items.filter((it) => it.ingredientId !== id) })));
   };
 
+  const duplicateIngredient = (ingredientId: string) => {
+    const original = ingredients.find((i) => i.id === ingredientId);
+    if (!original) return;
+
+    const duplicateName = makeCopyName(
+      original.name,
+      ingredients.map((i) => i.name)
+    );
+
+    const duplicated: Ingredient = {
+      ...original,
+      id: uid("ing"),
+      name: duplicateName,
+    };
+
+    setIngredients((p) => [duplicated, ...p]);
+    setTab("ingredients");
+    setActiveIngredientId(duplicated.id);
+  };
+
   const addDrink = () => {
     const d: Drink = { id: uid("drink"), name: "Novo drink", items: [] };
     setDrinks((p) => [d, ...p]);
     setTab("drinks");
     setActiveDrinkId(d.id);
+  };
+
+  const duplicateDrink = (drinkId: string) => {
+    const original = drinks.find((d) => d.id === drinkId);
+    if (!original) return;
+
+    const duplicateName = makeCopyName(
+      original.name,
+      drinks.map((d) => d.name)
+    );
+
+    const duplicated: Drink = {
+      ...original,
+      id: uid("drink"),
+      name: duplicateName,
+      items: original.items.map((item) => ({ ...item })),
+    };
+
+    setDrinks((p) => [duplicated, ...p]);
+    setTab("drinks");
+    setActiveDrinkId(duplicated.id);
   };
 
   const updateDrink = (id: string, patch: Partial<Drink>) => {
@@ -1110,6 +1165,7 @@ export default function Page() {
                       <strong style={{ fontSize: 14 }}>Receita</strong>
                       <div style={{ display: "flex", gap: 8 }}>
                         <button style={btn} onClick={() => addItemToDrink(activeDrink.id)} disabled={!ingredients.length}>+ Item</button>
+                        <button style={btn} onClick={() => duplicateDrink(activeDrink.id)}>Duplicar drink</button>
                         <button style={btnDanger} onClick={() => removeDrink(activeDrink.id)}>Remover drink</button>
                       </div>
                     </div>
@@ -1315,7 +1371,8 @@ export default function Page() {
                       />
                     </div>
 
-                    <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end" }}>
+                    <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
+                      <button style={btn} onClick={() => duplicateIngredient(activeIngredient.id)}>Duplicar ingrediente</button>
                       <button style={btnDanger} onClick={() => removeIngredient(activeIngredient.id)}>Remover ingrediente</button>
                     </div>
                   </div>
