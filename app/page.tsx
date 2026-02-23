@@ -11,6 +11,7 @@ type PricingModel = "by_ml" | "by_bottle" | "by_unit";
 
 /** Qual preço mostrar na UI */
 type PriceViewMode = "markup" | "cmv" | "both";
+type CartaViewMode = "cards" | "list";
 
 /** Arredondamento psicológico */
 type RoundingMode = "none" | "end_90" | "end_00" | "end_50";
@@ -472,6 +473,7 @@ export default function Page() {
   const [activeIngredientId, setActiveIngredientId] = useState<string | null>(null);
 
   const [menuSearch, setMenuSearch] = useState("");
+  const [cartaViewMode, setCartaViewMode] = useState<CartaViewMode>("cards");
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   // load/save
@@ -486,6 +488,9 @@ export default function Page() {
       if (parsed?.activeDrinkId) setActiveDrinkId(parsed.activeDrinkId);
       if (parsed?.activeIngredientId) setActiveIngredientId(parsed.activeIngredientId);
       if (parsed?.tab) setTab(parsed.tab);
+      if (parsed?.cartaViewMode === "cards" || parsed?.cartaViewMode === "list") {
+        setCartaViewMode(parsed.cartaViewMode);
+      }
     } catch {}
   }, []);
 
@@ -493,10 +498,10 @@ export default function Page() {
     try {
       localStorage.setItem(
         STORAGE_KEY,
-        JSON.stringify({ ingredients, drinks, settings, activeDrinkId, activeIngredientId, tab })
+        JSON.stringify({ ingredients, drinks, settings, activeDrinkId, activeIngredientId, tab, cartaViewMode })
       );
     } catch {}
-  }, [ingredients, drinks, settings, activeDrinkId, activeIngredientId, tab]);
+  }, [ingredients, drinks, settings, activeDrinkId, activeIngredientId, tab, cartaViewMode]);
 
   // seed: 3 drinks
   useEffect(() => {
@@ -883,44 +888,81 @@ export default function Page() {
               onChange={(e) => setMenuSearch(e.target.value)}
             />
 
-            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
-              {cartaRows.map(({ d, prices }) => (
-                <div key={d.id} style={{ border: "1px solid var(--border)", borderRadius: 16, padding: 12, background: "white" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                    <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-  {d.photoDataUrl ? (
-    <img
-      src={d.photoDataUrl}
-      alt=""
-      style={{
-        width: 56,
-        height: 56,
-        borderRadius: 14,
-        objectFit: "cover",
-        border: "1px solid var(--border)",
-      }}
-    />
-  ) : null}
+            <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <div style={small}>Visualização da Carta</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <div style={pillStyle(cartaViewMode === "cards")} onClick={() => setCartaViewMode("cards")}>
+                  Cards (com foto)
+                </div>
+                <div style={pillStyle(cartaViewMode === "list")} onClick={() => setCartaViewMode("list")}>
+                  Lista (sem foto)
+                </div>
+              </div>
+            </div>
 
-  <div>
-    <div style={{ fontSize: 16, fontWeight: 650 }}>
-      {d.name}
-    </div>
-    {d.notes ? <div style={small}>{d.notes}</div> : null}
-  </div>
-</div>
+            <div
+              style={
+                cartaViewMode === "cards"
+                  ? { marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }
+                  : { marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }
+              }
+            >
+              {cartaRows.map(({ d, prices }) =>
+                cartaViewMode === "cards" ? (
+                  <div key={d.id} style={{ border: "1px solid var(--border)", borderRadius: 16, background: "white", overflow: "hidden" }}>
+                    <div
+                      style={{
+                        height: 140,
+                        background: "var(--panel2)",
+                        borderBottom: "1px solid var(--border)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: "var(--muted)",
+                        fontSize: 12,
+                      }}
+                    >
+                      {d.photoDataUrl ? (
+                        <img src={d.photoDataUrl} alt={d.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                      ) : (
+                        "Sem foto"
+                      )}
+                    </div>
 
-                    <div style={{ display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap", justifyContent: "flex-end" }}>
-                      {prices.map((p) => (
-                        <div key={p.label} style={{ textAlign: "right" }}>
-                          <div style={small}>{p.label}</div>
-                          <div style={{ fontSize: 18, fontWeight: 650 }}>{formatBRL(p.value)}</div>
-                        </div>
-                      ))}
+                    <div style={{ padding: 12 }}>
+                      <div style={{ fontSize: 16, fontWeight: 650 }}>{d.name}</div>
+                      {d.notes ? <div style={{ ...small, marginTop: 4 }}>{d.notes}</div> : null}
+
+                      <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                        {prices.map((p) => (
+                          <div key={p.label} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                            <div style={small}>{p.label}</div>
+                            <div style={{ fontSize: 17, fontWeight: 650 }}>{formatBRL(p.value)}</div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                ) : (
+                  <div key={d.id} style={{ border: "1px solid var(--border)", borderRadius: 16, padding: 12, background: "white" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                      <div>
+                        <div style={{ fontSize: 16, fontWeight: 650 }}>{d.name}</div>
+                        {d.notes ? <div style={small}>{d.notes}</div> : null}
+                      </div>
+
+                      <div style={{ display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                        {prices.map((p) => (
+                          <div key={p.label} style={{ textAlign: "right" }}>
+                            <div style={small}>{p.label}</div>
+                            <div style={{ fontSize: 18, fontWeight: 650 }}>{formatBRL(p.value)}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )
+              )}
 
               {cartaRows.length === 0 && (
                 <div style={{ padding: 14, border: "1px dashed var(--border)", borderRadius: 14, color: "var(--muted)" }}>
