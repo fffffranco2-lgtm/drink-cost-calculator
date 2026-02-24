@@ -270,7 +270,7 @@ type AppStatePayload = {
   settings: Settings;
   activeDrinkId: string | null;
   activeIngredientId: string | null;
-  tab: "receitas" | "drinks" | "ingredients" | "settings";
+  tab: "carta" | "receitas" | "drinks" | "ingredients" | "settings";
   cartaViewMode: CartaViewMode;
 };
 
