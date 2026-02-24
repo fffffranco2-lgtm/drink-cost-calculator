@@ -46,7 +46,6 @@ type Settings = {
   roundingMode: RoundingMode;
 };
 
-const STORAGE_KEY = "mixologia_drink_cost_v4_menu_rounding";
 const DEFAULT_SETTINGS: Settings = {
   markup: 4,
   targetCmv: 0.2,
@@ -56,20 +55,40 @@ const DEFAULT_SETTINGS: Settings = {
   roundingMode: "end_90",
 };
 
-function normalizeDrink(raw: any): Drink {
+type AppStatePayload = {
+  ingredients?: Ingredient[];
+  drinks?: Drink[];
+  settings?: Settings;
+};
+
+type DrinkLike = Partial<Drink> & {
+  publicMenuPriceMode?: string;
+};
+
+type SettingsLike = Partial<Settings> & {
+  publicMenuPriceMode?: string;
+};
+
+function normalizeDrink(raw?: DrinkLike | null): Drink {
   const priceMode: PublicMenuDrinkPriceMode =
     raw?.publicMenuPriceMode === "cmv" || raw?.publicMenuPriceMode === "manual" ? raw.publicMenuPriceMode : "markup";
   const manualPublicPrice = Number(raw?.manualPublicPrice);
+  const id = typeof raw?.id === "string" && raw.id.trim() ? raw.id : `drink_${Date.now().toString(16)}`;
+  const name = typeof raw?.name === "string" ? raw.name : "Drink";
+  const items = Array.isArray(raw?.items) ? raw.items : [];
 
   return {
     ...raw,
+    id,
+    name,
+    items,
     showOnPublicMenu: Boolean(raw?.showOnPublicMenu),
     publicMenuPriceMode: priceMode,
     manualPublicPrice: Number.isFinite(manualPublicPrice) ? manualPublicPrice : 0,
   };
 }
 
-function normalizeSettings(raw: any): Settings {
+function normalizeSettings(raw?: SettingsLike | null): Settings {
   const visibility: PublicMenuPriceVisibility =
     raw?.publicMenuPriceVisibility === "none" || raw?.publicMenuPriceMode === "none" ? "none" : "show";
 
@@ -157,16 +176,57 @@ export default function PublicMenuPage() {
   const [drinks, setDrinks] = useState<Drink[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [search, setSearch] = useState("");
+  const [hydrating, setHydrating] = useState(true);
+  const [dataSource, setDataSource] = useState<"supabase" | "error">("supabase");
+  const [loadError, setLoadError] = useState("");
+
+  const applyState = (state: AppStatePayload | null | undefined) => {
+    if (!state) return false;
+    if (state.ingredients) setIngredients(state.ingredients);
+    if (state.drinks) setDrinks(state.drinks.map((d) => normalizeDrink(d)));
+    if (state.settings) setSettings(normalizeSettings(state.settings));
+    return Boolean(state.ingredients || state.drinks || state.settings);
+  };
 
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (parsed?.ingredients) setIngredients(parsed.ingredients);
-      if (parsed?.drinks) setDrinks((parsed.drinks as any[]).map((d) => normalizeDrink(d)));
-      if (parsed?.settings) setSettings(normalizeSettings(parsed.settings));
-    } catch {}
+    let active = true;
+
+    (async () => {
+      try {
+        const res = await fetch("/api/public-menu", { cache: "no-store" });
+        const payload = (await res.json()) as {
+          state?: AppStatePayload | null;
+          error?: string;
+        };
+
+        if (!res.ok) {
+          if (active) {
+            setDataSource("error");
+            setLoadError(payload.error ?? "Não foi possível carregar os dados públicos no Supabase.");
+          }
+          return;
+        }
+
+        if (active && applyState(payload.state)) {
+          setDataSource("supabase");
+          setLoadError("");
+        } else if (active) {
+          setDataSource("error");
+          setLoadError("Não foi possível carregar os dados públicos no Supabase.");
+        }
+      } catch {
+        if (active) {
+          setDataSource("error");
+          setLoadError("Erro ao consultar o Supabase para o cardápio público.");
+        }
+      } finally {
+        if (active) setHydrating(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   const rows = useMemo(() => {
@@ -197,52 +257,73 @@ export default function PublicMenuPage() {
       });
   }, [drinks, ingredients, search, settings]);
 
+  const themeVars: React.CSSProperties = {
+    ["--bg" as never]: "#f6f2ea",
+    ["--panel" as never]: "#fffdf9",
+    ["--panel2" as never]: "#fff4e7",
+    ["--ink" as never]: "#1d232a",
+    ["--muted" as never]: "#5a6672",
+    ["--border" as never]: "#dccdb8",
+    ["--shadow" as never]: "0 12px 30px rgba(32, 37, 42, 0.08)",
+    ["--accent" as never]: "#0f766e",
+  };
+
   const page: React.CSSProperties = {
-    background: "#fbf7f0",
+    ...themeVars,
+    background: "transparent",
     minHeight: "100vh",
-    color: "#2b2b2b",
+    color: "var(--ink)",
     padding: 24,
-    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+    fontFamily: 'var(--font-app-sans), "Trebuchet MS", "Segoe UI", sans-serif',
   };
 
   const container: React.CSSProperties = { maxWidth: 1160, margin: "0 auto" };
 
   const card: React.CSSProperties = {
-    background: "#fffdf9",
-    border: "1px solid #e7e1d8",
+    background: "var(--panel)",
+    border: "1px solid var(--border)",
     borderRadius: 18,
     padding: 16,
-    boxShadow: "0 6px 24px rgba(30, 30, 30, 0.06)",
+    boxShadow: "var(--shadow)",
   };
 
   const input: React.CSSProperties = {
     width: "100%",
-    padding: 10,
+    padding: 12,
     borderRadius: 12,
-    border: "1px solid #e7e1d8",
+    border: "1px solid var(--border)",
     background: "white",
     outline: "none",
   };
 
-  const small: React.CSSProperties = { fontSize: 12, color: "#6a6a6a" };
+  const small: React.CSSProperties = { fontSize: 12, color: "var(--muted)" };
 
   return (
     <div style={page}>
       <div style={container}>
-        <div style={{ ...card, marginBottom: 14, background: "linear-gradient(180deg, #fffdf9 0%, #fff7ee 100%)" }}>
+        <div style={{ ...card, marginBottom: 14, background: "linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
             <div>
-              <h1 style={{ margin: 0, fontSize: 22, letterSpacing: -0.2 }}>Cardápio de Drinks</h1>
-              <div style={small}>Seção pública com drinks selecionados</div>
+              <h1 style={{ margin: 0, fontSize: 26, letterSpacing: -0.5 }}>Cardápio de Drinks</h1>
+              <div style={small}>
+                Seção pública com drinks selecionados
+                {hydrating ? " • carregando..." : dataSource === "supabase" ? " • dados do Supabase" : " • erro ao carregar"}
+              </div>
             </div>
 
-            <Link href="/admin" style={{ textDecoration: "none", padding: "10px 12px", borderRadius: 12, border: "1px solid #e7e1d8", background: "#f6efe6", color: "inherit" }}>
+            <Link href="/admin" style={{ textDecoration: "none", padding: "10px 13px", borderRadius: 12, border: "1px solid var(--border)", background: "var(--panel2)", color: "var(--ink)", fontWeight: 600 }}>
               Ir para área interna
             </Link>
           </div>
         </div>
 
         <div style={card}>
+          {loadError ? (
+            <div style={{ marginBottom: 12, padding: 10, borderRadius: 12, border: "1px solid #f0c2c2", background: "#fff1f1", color: "#7b1f1f", fontSize: 12 }}>
+              {loadError}
+            </div>
+          ) : null}
+
           <input
             style={input}
             placeholder="Buscar drink..."
@@ -255,7 +336,7 @@ export default function PublicMenuPage() {
               <div
                 key={drink.id}
                 style={{
-                  border: "1px solid #e7e1d8",
+                  border: "1px solid var(--border)",
                   borderRadius: 16,
                   background: "white",
                   overflow: "hidden",
@@ -267,12 +348,12 @@ export default function PublicMenuPage() {
                 <div
                   style={{
                     flex: "0 0 52%",
-                    background: "#fff7ee",
-                    borderBottom: "1px solid #e7e1d8",
+                    background: "var(--panel2)",
+                    borderBottom: "1px solid var(--border)",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    color: "#6a6a6a",
+                    color: "var(--muted)",
                     fontSize: 12,
                   }}
                 >
@@ -298,7 +379,7 @@ export default function PublicMenuPage() {
             ))}
 
             {rows.length === 0 && (
-              <div style={{ padding: 14, border: "1px dashed #e7e1d8", borderRadius: 14, color: "#6a6a6a", gridColumn: "1 / -1" }}>
+              <div style={{ padding: 14, border: "1px dashed var(--border)", borderRadius: 14, color: "var(--muted)", gridColumn: "1 / -1", background: "var(--panel2)" }}>
                 Nenhum drink selecionado para o cardápio público.
               </div>
             )}

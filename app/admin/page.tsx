@@ -75,6 +75,8 @@ const DEFAULT_SETTINGS: Settings = {
 };
 
 const STORAGE_KEY = "mixologia_drink_cost_v4_menu_rounding";
+const REMOTE_SAVE_DEBOUNCE_MS = 1500;
+const LOCAL_SAVE_DEBOUNCE_MS = 1500;
 
 function normalizeDrink(raw: any): Drink {
   const priceMode: PublicMenuDrinkPriceMode =
@@ -519,6 +521,8 @@ function pillStyle(active: boolean): React.CSSProperties {
 export default function Page() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const csvInputRef = useRef<HTMLInputElement | null>(null);
+  const lastRemoteStateRef = useRef<string>("");
+  const lastLocalStateRef = useRef<string>("");
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [drinks, setDrinks] = useState<Drink[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -532,6 +536,30 @@ export default function Page() {
 
   const [menuSearch, setMenuSearch] = useState("");
   const [cartaViewMode, setCartaViewMode] = useState<CartaViewMode>("cards");
+
+  const remoteState: AppStatePayload = useMemo(
+    () => ({
+      ingredients,
+      drinks,
+      settings,
+      activeDrinkId,
+      activeIngredientId,
+      tab,
+      cartaViewMode,
+    }),
+    [ingredients, drinks, settings, activeDrinkId, activeIngredientId, tab, cartaViewMode]
+  );
+  const remoteStateJson = useMemo(() => JSON.stringify(remoteState), [remoteState]);
+
+  const localStateJson = useMemo(
+    () =>
+      JSON.stringify({
+        ingredients,
+        drinks,
+        settings,
+      }),
+    [ingredients, drinks, settings]
+  );
 
   useEffect(() => {
     let active = true;
@@ -575,6 +603,15 @@ export default function Page() {
         if (state.cartaViewMode === "cards" || state.cartaViewMode === "list") {
           setCartaViewMode(state.cartaViewMode);
         }
+        lastRemoteStateRef.current = JSON.stringify({
+          ingredients: state.ingredients ?? [],
+          drinks: state.drinks ?? [],
+          settings: state.settings ?? DEFAULT_SETTINGS,
+          activeDrinkId: state.activeDrinkId ?? null,
+          activeIngredientId: state.activeIngredientId ?? null,
+          tab: state.tab === "carta" ? "receitas" : state.tab ?? "receitas",
+          cartaViewMode: state.cartaViewMode === "list" ? "list" : "cards",
+        });
       }
 
       setHydratingRemote(false);
@@ -587,55 +624,44 @@ export default function Page() {
 
   useEffect(() => {
     if (hydratingRemote || !adminUserId || !supabase) return;
+    if (lastRemoteStateRef.current === remoteStateJson) return;
 
     const timeout = setTimeout(async () => {
-      const state: AppStatePayload = {
-        ingredients,
-        drinks,
-        settings,
-        activeDrinkId,
-        activeIngredientId,
-        tab,
-        cartaViewMode,
-      };
-
       const { error } = await supabase
         .from("app_state")
-        .upsert({ user_id: adminUserId, state, updated_at: new Date().toISOString() });
+        .upsert({ user_id: adminUserId, state: remoteState, updated_at: new Date().toISOString() });
 
-      if (error) setRemoteError("Falha ao salvar alterações no Supabase.");
-    }, 700);
+      if (error) {
+        setRemoteError("Falha ao salvar alterações no Supabase.");
+      } else {
+        lastRemoteStateRef.current = remoteStateJson;
+      }
+    }, REMOTE_SAVE_DEBOUNCE_MS);
 
     return () => clearTimeout(timeout);
   }, [
     hydratingRemote,
     adminUserId,
-    ingredients,
-    drinks,
-    settings,
-    activeDrinkId,
-    activeIngredientId,
-    tab,
-    cartaViewMode,
+    remoteState,
+    remoteStateJson,
     supabase,
   ]);
 
   useEffect(() => {
     if (hydratingRemote) return;
+    if (lastLocalStateRef.current === localStateJson) return;
 
-    try {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({
-          ingredients,
-          drinks,
-          settings,
-        })
-      );
-    } catch {
-      // ignora erro de quota/storage indisponível
-    }
-  }, [hydratingRemote, ingredients, drinks, settings]);
+    const timeout = setTimeout(() => {
+      try {
+        localStorage.setItem(STORAGE_KEY, localStateJson);
+        lastLocalStateRef.current = localStateJson;
+      } catch {
+        // ignora erro de quota/storage indisponível
+      }
+    }, LOCAL_SAVE_DEBOUNCE_MS);
+
+    return () => clearTimeout(timeout);
+  }, [hydratingRemote, localStateJson]);
 
   // seed: 3 drinks
   useEffect(() => {
@@ -896,19 +922,19 @@ export default function Page() {
   /* ------------------------------ Theme ------------------------------ */
 
   const themeVars: React.CSSProperties = {
-    ["--bg" as any]: "#fbf7f0",
+    ["--bg" as any]: "#f6f2ea",
     ["--panel" as any]: "#fffdf9",
-    ["--panel2" as any]: "#fff7ee",
-    ["--pill" as any]: "#fff3e9",
-    ["--pillActive" as any]: "#f2f7ff",
-    ["--ink" as any]: "#2b2b2b",
-    ["--muted" as any]: "#6a6a6a",
-    ["--border" as any]: "#e7e1d8",
-    ["--shadow" as any]: "0 6px 24px rgba(30, 30, 30, 0.06)",
-    ["--btn" as any]: "#f6efe6",
+    ["--panel2" as any]: "#fff4e7",
+    ["--pill" as any]: "#f7ebdb",
+    ["--pillActive" as any]: "#eaf6f4",
+    ["--ink" as any]: "#1d232a",
+    ["--muted" as any]: "#5a6672",
+    ["--border" as any]: "#dccdb8",
+    ["--shadow" as any]: "0 12px 30px rgba(32, 37, 42, 0.08)",
+    ["--btn" as any]: "#f3e8d8",
     ["--danger" as any]: "#fff0f0",
     ["--dangerBorder" as any]: "#f2caca",
-    ["--focus" as any]: "rgba(109, 157, 255, 0.35)",
+    ["--focus" as any]: "rgba(15, 118, 110, 0.28)",
   };
 
   const page: React.CSSProperties = {
@@ -917,7 +943,7 @@ export default function Page() {
     minHeight: "100vh",
     color: "var(--ink)",
     padding: 24,
-    fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+    fontFamily: 'var(--font-app-sans), "Trebuchet MS", "Segoe UI", sans-serif',
   };
 
   const container: React.CSSProperties = { maxWidth: 1160, margin: "0 auto" };
@@ -936,11 +962,12 @@ export default function Page() {
   };
 
   const btn: React.CSSProperties = {
-    padding: "10px 12px",
+    padding: "10px 13px",
     borderRadius: 12,
     border: "1px solid var(--border)",
     background: "var(--btn)",
     cursor: "pointer",
+    fontWeight: 600,
   };
 
   const btnDanger: React.CSSProperties = {
@@ -951,7 +978,7 @@ export default function Page() {
 
   const input: React.CSSProperties = {
     width: "100%",
-    padding: 10,
+    padding: 12,
     borderRadius: 12,
     border: "1px solid var(--border)",
     background: "white",
@@ -968,7 +995,21 @@ export default function Page() {
   const focusStyle = `
     input:focus, textarea:focus, select:focus {
       box-shadow: 0 0 0 4px var(--focus);
-      border-color: #b8ccff;
+      border-color: #76b6ae;
+    }
+    @media (max-width: 900px) {
+      .settings-grid,
+      .ingredient-main-grid,
+      .ingredient-bottle-grid,
+      .ingredient-two-grid {
+        grid-template-columns: 1fr !important;
+      }
+      .kpi-grid {
+        grid-template-columns: 1fr !important;
+      }
+      .recipe-item-row {
+        grid-template-columns: 1fr !important;
+      }
     }
   `;
 
@@ -1220,7 +1261,7 @@ export default function Page() {
           <div style={card}>
             <h2 style={{ marginTop: 0, fontSize: 16 }}>Configurações</h2>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
+            <div className="settings-grid" style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
               <div>
                 <div style={small}>Markup (x)</div>
                 <NumberField
@@ -1408,14 +1449,23 @@ export default function Page() {
         onChange={async (e) => {
           const f = e.target.files?.[0];
           if (!f) return;
-
-          const reader = new FileReader();
-          reader.onload = () => {
-            updateDrink(activeDrink.id, {
-              photoDataUrl: reader.result as string,
+          try {
+            const photoDataUrl = await fileToDataUrlResized(f, {
+              maxWidth: 1200,
+              maxHeight: 1200,
+              quality: 0.82,
             });
-          };
-          reader.readAsDataURL(f);
+            updateDrink(activeDrink.id, { photoDataUrl });
+          } catch {
+            // fallback para manter upload funcional mesmo se a compressão falhar
+            const reader = new FileReader();
+            reader.onload = () => {
+              updateDrink(activeDrink.id, {
+                photoDataUrl: reader.result as string,
+              });
+            };
+            reader.readAsDataURL(f);
+          }
         }}
       />
     </label>
@@ -1459,7 +1509,7 @@ export default function Page() {
                       ];
 
                       return (
-                        <div style={{ display: "grid", gridTemplateColumns: `repeat(${blocks.length}, minmax(0, 1fr))`, gap: 10, marginTop: 10 }}>
+                        <div className="kpi-grid" style={{ display: "grid", gridTemplateColumns: `repeat(${blocks.length}, minmax(0, 1fr))`, gap: 10, marginTop: 10 }}>
                           {blocks}
                         </div>
                       );
@@ -1498,7 +1548,7 @@ export default function Page() {
                           const hint = it.unit === "un" ? `${formatBRL(perUnit)} / un` : `${formatBRL(cpm ?? 0)} / ml`;
 
                           return (
-                            <div key={`${activeDrink.id}_${idx}`} style={{ display: "grid", gridTemplateColumns: "2fr 0.8fr 0.9fr 1fr 0.8fr", gap: 8, alignItems: "center" }}>
+                            <div className="recipe-item-row" key={`${activeDrink.id}_${idx}`} style={{ display: "grid", gridTemplateColumns: "2fr 0.8fr 0.9fr 1fr 0.8fr", gap: 8, alignItems: "center" }}>
                               <select style={input} value={it.ingredientId} onChange={(e) => updateItem(activeDrink.id, idx, { ingredientId: e.target.value })}>
                                 {ingredients.map((i) => (
                                   <option key={i.id} value={i.id}>{i.name}</option>
@@ -1568,7 +1618,7 @@ export default function Page() {
 
                 {activeIngredient && (
                   <div style={{ background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: 16, padding: 12 }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10 }}>
+                    <div className="ingredient-main-grid" style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10 }}>
                       <input
                         style={input}
                         value={activeIngredient.name}
@@ -1588,7 +1638,7 @@ export default function Page() {
                     </div>
 
                     {activeIngredient.pricingModel === "by_bottle" && (
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10, marginTop: 10 }}>
+                      <div className="ingredient-bottle-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10, marginTop: 10 }}>
                         <div>
                           <div style={small}>Preço (R$)</div>
                           <NumberField
@@ -1645,7 +1695,7 @@ export default function Page() {
                     )}
 
                     {activeIngredient.pricingModel === "by_ml" && (
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
+                      <div className="ingredient-two-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
                         <div>
                           <div style={small}>R$/ml</div>
                           <NumberField
@@ -1663,7 +1713,7 @@ export default function Page() {
                     )}
 
                     {activeIngredient.pricingModel === "by_unit" && (
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
+                      <div className="ingredient-two-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
                         <div>
                           <div style={small}>R$ por unidade</div>
                           <NumberField

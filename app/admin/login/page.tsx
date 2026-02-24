@@ -46,9 +46,9 @@ export default function AdminLoginPage() {
         minHeight: "100vh",
         display: "grid",
         placeItems: "center",
-        background: "#fbf7f0",
+        background: "transparent",
         padding: 24,
-        fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
+        fontFamily: 'var(--font-app-sans), "Trebuchet MS", "Segoe UI", sans-serif',
       }}
     >
       <form
@@ -57,24 +57,24 @@ export default function AdminLoginPage() {
           width: "100%",
           maxWidth: 360,
           background: "#fffdf9",
-          border: "1px solid #e7e1d8",
+          border: "1px solid #dccdb8",
           borderRadius: 16,
-          padding: 16,
-          boxShadow: "0 6px 24px rgba(30, 30, 30, 0.06)",
+          padding: 18,
+          boxShadow: "0 12px 30px rgba(32, 37, 42, 0.08)",
           display: "flex",
           flexDirection: "column",
-          gap: 10,
+          gap: 12,
         }}
       >
-        <h1 style={{ margin: 0, fontSize: 20 }}>Login administrativo</h1>
-        <div style={{ fontSize: 12, color: "#6a6a6a" }}>Acesso à área interna</div>
+        <h1 style={{ margin: 0, fontSize: 24, letterSpacing: -0.4 }}>Login administrativo</h1>
+        <div style={{ fontSize: 12, color: "#5a6672" }}>Acesso à área interna</div>
 
         <input
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           placeholder="E-mail"
           autoComplete="email"
-          style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #e7e1d8" }}
+          style={{ width: "100%", padding: 12, borderRadius: 12, border: "1px solid #dccdb8" }}
         />
         <input
           type="password"
@@ -82,7 +82,7 @@ export default function AdminLoginPage() {
           onChange={(e) => setPassword(e.target.value)}
           placeholder="Senha"
           autoComplete="current-password"
-          style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #e7e1d8" }}
+          style={{ width: "100%", padding: 12, borderRadius: 12, border: "1px solid #dccdb8" }}
         />
 
         {error ? <div style={{ fontSize: 12, color: "#b00020" }}>{error}</div> : null}
@@ -96,11 +96,12 @@ export default function AdminLoginPage() {
           type="submit"
           disabled={loading || !isConfigured}
           style={{
-            padding: "10px 12px",
+            padding: "10px 13px",
             borderRadius: 12,
-            border: "1px solid #e7e1d8",
-            background: "#f6efe6",
+            border: "1px solid #dccdb8",
+            background: "#f3e8d8",
             cursor: loading ? "wait" : "pointer",
+            fontWeight: 600,
           }}
         >
           {loading ? "Entrando..." : "Entrar"}

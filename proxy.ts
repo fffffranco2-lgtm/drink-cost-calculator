@@ -16,6 +16,17 @@ export async function proxy(req: NextRequest) {
 
   if (!url || !anonKey) return res;
 
+  const hasSupabaseAuthCookie = req.cookies
+    .getAll()
+    .some(({ name }) => name.startsWith("sb-") && name.includes("-auth-token"));
+
+  // Evita round-trip com Supabase quando já sabemos que o usuário não está autenticado.
+  if (!hasSupabaseAuthCookie) {
+    if (isLoginPage) return res;
+    const loginUrl = new URL("/admin/login", req.url);
+    return NextResponse.redirect(loginUrl);
+  }
+
   const supabase = createServerClient(url, anonKey, {
     cookies: {
       getAll() {
@@ -29,9 +40,12 @@ export async function proxy(req: NextRequest) {
     },
   });
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const userResult = await Promise.race([
+    supabase.auth.getUser(),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
+  ]);
+
+  const user = userResult?.data?.user ?? null;
 
   if (!user && !isLoginPage) {
     const loginUrl = new URL("/admin/login", req.url);
