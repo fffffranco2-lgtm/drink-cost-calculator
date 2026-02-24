@@ -1,9 +1,11 @@
 "use client";
 
 import { FormEvent, useState } from "react";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 export default function AdminLoginPage() {
-  const [username, setUsername] = useState("");
+  const supabase = getSupabaseBrowserClient();
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -14,13 +16,12 @@ export default function AdminLoginPage() {
     setError("");
 
     try {
-      const res = await fetch("/api/admin/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
       });
 
-      if (!res.ok) {
+      if (error) {
         setError("Usuário ou senha inválidos.");
         return;
       }
@@ -63,10 +64,10 @@ export default function AdminLoginPage() {
         <div style={{ fontSize: 12, color: "#6a6a6a" }}>Acesso à área interna</div>
 
         <input
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          placeholder="Usuário"
-          autoComplete="username"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="E-mail"
+          autoComplete="email"
           style={{ width: "100%", padding: 10, borderRadius: 12, border: "1px solid #e7e1d8" }}
         />
         <input

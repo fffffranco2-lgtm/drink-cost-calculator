@@ -1,8 +1,9 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Papa from "papaparse";
 import Link from "next/link";
+import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 /** Unidades que a receita pode usar */
 type RecipeUnit = "ml" | "un" | "dash" | "drop";
@@ -64,7 +65,6 @@ type Settings = {
   roundingMode: RoundingMode; // arredondamento psicológico
 };
 
-const STORAGE_KEY = "mixologia_drink_cost_v4_menu_rounding";
 const DEFAULT_SETTINGS: Settings = {
   markup: 4,
   targetCmv: 0.2,
@@ -262,6 +262,16 @@ type ExportPayload = {
   ingredients: Ingredient[];
   drinks: Drink[];
   settings: Settings;
+};
+
+type AppStatePayload = {
+  ingredients: Ingredient[];
+  drinks: Drink[];
+  settings: Settings;
+  activeDrinkId: string | null;
+  activeIngredientId: string | null;
+  tab: "receitas" | "drinks" | "ingredients" | "settings";
+  cartaViewMode: CartaViewMode;
 };
 
 function exportAsCsv(payload: ExportPayload) {
@@ -505,9 +515,13 @@ function pillStyle(active: boolean): React.CSSProperties {
 }
 
 export default function Page() {
+  const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [drinks, setDrinks] = useState<Drink[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  const [hydratingRemote, setHydratingRemote] = useState(true);
+  const [adminUserId, setAdminUserId] = useState<string | null>(null);
+  const [remoteError, setRemoteError] = useState<string>("");
 
   const [tab, setTab] = useState<"receitas" | "drinks" | "ingredients" | "settings">("receitas");
   const [activeDrinkId, setActiveDrinkId] = useState<string | null>(null);
@@ -515,38 +529,91 @@ export default function Page() {
 
   const [menuSearch, setMenuSearch] = useState("");
   const [cartaViewMode, setCartaViewMode] = useState<CartaViewMode>("cards");
-  const fileRef = useRef<HTMLInputElement | null>(null);
 
-  // load/save
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (parsed?.ingredients) setIngredients(parsed.ingredients);
-      if (parsed?.drinks) setDrinks((parsed.drinks as any[]).map((d) => normalizeDrink(d)));
-      if (parsed?.settings) setSettings(normalizeSettings(parsed.settings));
-      if (parsed?.activeDrinkId) setActiveDrinkId(parsed.activeDrinkId);
-      if (parsed?.activeIngredientId) setActiveIngredientId(parsed.activeIngredientId);
-      if (parsed?.tab) setTab(parsed.tab === "carta" ? "receitas" : parsed.tab);
-      if (parsed?.cartaViewMode === "cards" || parsed?.cartaViewMode === "list") {
-        setCartaViewMode(parsed.cartaViewMode);
+    let active = true;
+
+    (async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+
+      if (!active) return;
+      if (!user) {
+        window.location.href = "/admin/login";
+        return;
       }
-    } catch {}
-  }, []);
+
+      setAdminUserId(user.id);
+
+      const { data, error } = await supabase.from("app_state").select("state").eq("user_id", user.id).maybeSingle();
+      if (!active) return;
+
+      if (error) {
+        setRemoteError("Falha ao carregar dados do Supabase.");
+        setHydratingRemote(false);
+        return;
+      }
+
+      const state = data?.state as Partial<AppStatePayload> | undefined;
+      if (state) {
+        if (state.ingredients) setIngredients(state.ingredients);
+        if (state.drinks) setDrinks((state.drinks as any[]).map((d) => normalizeDrink(d)));
+        if (state.settings) setSettings(normalizeSettings(state.settings));
+        if (state.activeDrinkId) setActiveDrinkId(state.activeDrinkId);
+        if (state.activeIngredientId) setActiveIngredientId(state.activeIngredientId);
+        if (state.tab) setTab(state.tab === "carta" ? "receitas" : state.tab);
+        if (state.cartaViewMode === "cards" || state.cartaViewMode === "list") {
+          setCartaViewMode(state.cartaViewMode);
+        }
+      }
+
+      setHydratingRemote(false);
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [supabase]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ ingredients, drinks, settings, activeDrinkId, activeIngredientId, tab, cartaViewMode })
-      );
-    } catch {}
-  }, [ingredients, drinks, settings, activeDrinkId, activeIngredientId, tab, cartaViewMode]);
+    if (hydratingRemote || !adminUserId) return;
+
+    const timeout = setTimeout(async () => {
+      const state: AppStatePayload = {
+        ingredients,
+        drinks,
+        settings,
+        activeDrinkId,
+        activeIngredientId,
+        tab,
+        cartaViewMode,
+      };
+
+      const { error } = await supabase
+        .from("app_state")
+        .upsert({ user_id: adminUserId, state, updated_at: new Date().toISOString() });
+
+      if (error) setRemoteError("Falha ao salvar alterações no Supabase.");
+    }, 700);
+
+    return () => clearTimeout(timeout);
+  }, [
+    hydratingRemote,
+    adminUserId,
+    ingredients,
+    drinks,
+    settings,
+    activeDrinkId,
+    activeIngredientId,
+    tab,
+    cartaViewMode,
+    supabase,
+  ]);
 
   // seed: 3 drinks
   useEffect(() => {
-    if (ingredients.length || drinks.length) return;
+    if (hydratingRemote || ingredients.length || drinks.length) return;
 
     const gin: Ingredient = { id: uid("ing"), name: "Gin (750ml)", pricingModel: "by_bottle", bottlePrice: 120, bottleMl: 750, yieldMl: 720, lossPct: 0 };
     const vodka: Ingredient = { id: uid("ing"), name: "Vodka (750ml)", pricingModel: "by_bottle", bottlePrice: 95, bottleMl: 750, yieldMl: 720, lossPct: 0 };
@@ -606,7 +673,7 @@ export default function Page() {
     setDrinks(drinkList);
     setActiveDrinkId(drinkList[0].id);
     setActiveIngredientId(ingList[0].id);
-  }, [ingredients.length, drinks.length]);
+  }, [hydratingRemote, ingredients.length, drinks.length]);
 
   // keep active selections valid
   useEffect(() => {
@@ -767,17 +834,8 @@ export default function Page() {
     );
   };
 
-  // CSV import
-  const onImportFile = async (file: File) => {
-    const text = await file.text();
-    const parsed = parseCombinedCsv(text);
-    if (parsed.ingredients) setIngredients(parsed.ingredients);
-    if (parsed.drinks) setDrinks((parsed.drinks as any[]).map((d) => normalizeDrink(d)));
-    if (parsed.settings) setSettings(normalizeSettings(parsed.settings));
-  };
-
   const logout = async () => {
-    await fetch("/api/admin/logout", { method: "POST" });
+    await supabase.auth.signOut();
     window.location.href = "/admin/login";
   };
 
@@ -897,6 +955,7 @@ export default function Page() {
             <div>
               <h1 style={{ margin: 0, fontSize: 22, letterSpacing: -0.2 }}>Custos de Drinks</h1>
               <div style={small}>Área interna da operação • Arredondamento psicológico • Inputs numéricos editáveis</div>
+              {remoteError ? <div style={{ ...small, color: "#b00020", marginTop: 4 }}>{remoteError}</div> : null}
             </div>
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
@@ -907,27 +966,12 @@ export default function Page() {
                 Exportar CSV
               </button>
 
-              <button style={btn} onClick={() => fileRef.current?.click()}>
-                Importar CSV
-              </button>
               <Link href="/" style={{ ...btn, textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
                 Cardápio público
               </Link>
               <button style={btn} onClick={logout}>
                 Sair
               </button>
-
-              <input
-                ref={fileRef}
-                type="file"
-                accept=".csv,text/csv"
-                style={{ display: "none" }}
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) onImportFile(f);
-                  e.currentTarget.value = "";
-                }}
-              />
             </div>
           </div>
 
@@ -1190,7 +1234,6 @@ export default function Page() {
               style={btnDanger}
               onClick={() => {
                 if (confirm("Apagar todos os dados salvos no navegador?")) {
-                  localStorage.removeItem(STORAGE_KEY);
                   setIngredients([]);
                   setDrinks([]);
                   setSettings({ ...DEFAULT_SETTINGS });

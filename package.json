@@ -8,9 +8,13 @@
     "start": "next start",
     "lint": "eslint"
   },
+  "engines": {
+    "node": ">=20.9.0"
+  },
   "dependencies": {
+    "@supabase/ssr": "^0.7.0",
+    "@supabase/supabase-js": "^2.57.4",
     "next": "16.1.6",
-    "node": "^20.x",
     "papaparse": "^5.5.3",
     "react": "19.2.3",
     "react-dom": "19.2.3"
