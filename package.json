@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "next": "16.1.6",
-    "node": "^25.6.1",
+    "node": "^20.x",
     "papaparse": "^5.5.3",
     "react": "19.2.3",
     "react-dom": "19.2.3"
