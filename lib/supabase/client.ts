@@ -7,7 +7,7 @@ export function getSupabaseBrowserClient() {
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
   if (!url || !anonKey) {
-    throw new Error("Supabase env vars ausentes: NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY");
+    return null;
   }
 
   return createBrowserClient(url, anonKey);

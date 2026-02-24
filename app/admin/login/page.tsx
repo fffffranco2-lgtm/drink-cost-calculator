@@ -5,6 +5,7 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 export default function AdminLoginPage() {
   const supabase = getSupabaseBrowserClient();
+  const isConfigured = Boolean(supabase);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -16,6 +17,11 @@ export default function AdminLoginPage() {
     setError("");
 
     try {
+      if (!supabase) {
+        setError("Variáveis do Supabase não configuradas no deploy.");
+        return;
+      }
+
       const { error } = await supabase.auth.signInWithPassword({
         email,
         password,
@@ -80,10 +86,15 @@ export default function AdminLoginPage() {
         />
 
         {error ? <div style={{ fontSize: 12, color: "#b00020" }}>{error}</div> : null}
+        {!isConfigured ? (
+          <div style={{ fontSize: 12, color: "#b00020" }}>
+            Configure `NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPABASE_ANON_KEY` no ambiente.
+          </div>
+        ) : null}
 
         <button
           type="submit"
-          disabled={loading}
+          disabled={loading || !isConfigured}
           style={{
             padding: "10px 12px",
             borderRadius: 12,

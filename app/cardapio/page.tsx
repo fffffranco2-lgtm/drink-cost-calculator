@@ -252,10 +252,21 @@ export default function PublicMenuPage() {
 
           <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
             {rows.map(({ drink, price }) => (
-              <div key={drink.id} style={{ border: "1px solid #e7e1d8", borderRadius: 16, background: "white", overflow: "hidden" }}>
+              <div
+                key={drink.id}
+                style={{
+                  border: "1px solid #e7e1d8",
+                  borderRadius: 16,
+                  background: "white",
+                  overflow: "hidden",
+                  aspectRatio: "4 / 5",
+                  display: "flex",
+                  flexDirection: "column",
+                }}
+              >
                 <div
                   style={{
-                    height: 140,
+                    flex: "0 0 52%",
                     background: "#fff7ee",
                     borderBottom: "1px solid #e7e1d8",
                     display: "flex",

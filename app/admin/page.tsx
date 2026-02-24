@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import Link from "next/link";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
@@ -73,6 +73,8 @@ const DEFAULT_SETTINGS: Settings = {
   publicMenuPriceVisibility: "show",
   roundingMode: "end_90",
 };
+
+const STORAGE_KEY = "mixologia_drink_cost_v4_menu_rounding";
 
 function normalizeDrink(raw: any): Drink {
   const priceMode: PublicMenuDrinkPriceMode =
@@ -516,6 +518,7 @@ function pillStyle(active: boolean): React.CSSProperties {
 
 export default function Page() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+  const csvInputRef = useRef<HTMLInputElement | null>(null);
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [drinks, setDrinks] = useState<Drink[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -534,6 +537,12 @@ export default function Page() {
     let active = true;
 
     (async () => {
+      if (!supabase) {
+        setRemoteError("Variáveis do Supabase não configuradas no ambiente.");
+        setHydratingRemote(false);
+        return;
+      }
+
       const {
         data: { user },
       } = await supabase.auth.getUser();
@@ -577,7 +586,7 @@ export default function Page() {
   }, [supabase]);
 
   useEffect(() => {
-    if (hydratingRemote || !adminUserId) return;
+    if (hydratingRemote || !adminUserId || !supabase) return;
 
     const timeout = setTimeout(async () => {
       const state: AppStatePayload = {
@@ -610,6 +619,23 @@ export default function Page() {
     cartaViewMode,
     supabase,
   ]);
+
+  useEffect(() => {
+    if (hydratingRemote) return;
+
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          ingredients,
+          drinks,
+          settings,
+        })
+      );
+    } catch {
+      // ignora erro de quota/storage indisponível
+    }
+  }, [hydratingRemote, ingredients, drinks, settings]);
 
   // seed: 3 drinks
   useEffect(() => {
@@ -835,8 +861,36 @@ export default function Page() {
   };
 
   const logout = async () => {
+    if (!supabase) {
+      window.location.href = "/admin/login";
+      return;
+    }
     await supabase.auth.signOut();
     window.location.href = "/admin/login";
+  };
+
+  const triggerCsvImport = () => {
+    csvInputRef.current?.click();
+  };
+
+  const importFromCsvFile = async (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const text = String(reader.result || "");
+        const data = parseCombinedCsv(text);
+
+        if (data.ingredients) setIngredients(data.ingredients);
+        if (data.drinks) setDrinks(data.drinks);
+        if (data.settings) setSettings(data.settings);
+
+        if (data.ingredients) setActiveIngredientId(data.ingredients[0]?.id ?? null);
+        if (data.drinks) setActiveDrinkId(data.drinks[0]?.id ?? null);
+      } catch {
+        alert("Falha ao importar CSV. Verifique o formato do arquivo.");
+      }
+    };
+    reader.readAsText(file, "utf-8");
   };
 
   /* ------------------------------ Theme ------------------------------ */
@@ -962,10 +1016,6 @@ export default function Page() {
               <button style={btn} onClick={addDrink}>+ Drink</button>
               <button style={btn} onClick={addIngredient}>+ Ingrediente</button>
 
-              <button style={btn} onClick={() => exportAsCsv({ ingredients, drinks, settings })}>
-                Exportar CSV
-              </button>
-
               <Link href="/" style={{ ...btn, textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
                 Cardápio público
               </Link>
@@ -1021,10 +1071,21 @@ export default function Page() {
             >
               {cartaRows.map(({ d, prices, publicPrice }) =>
                 cartaViewMode === "cards" ? (
-                  <div key={d.id} style={{ border: "1px solid var(--border)", borderRadius: 16, background: "white", overflow: "hidden" }}>
+                  <div
+                    key={d.id}
+                    style={{
+                      border: "1px solid var(--border)",
+                      borderRadius: 16,
+                      background: "white",
+                      overflow: "hidden",
+                      aspectRatio: "4 / 5",
+                      display: "flex",
+                      flexDirection: "column",
+                    }}
+                  >
                     <div
                       style={{
-                        height: 140,
+                        flex: "0 0 52%",
                         background: "var(--panel2)",
                         borderBottom: "1px solid var(--border)",
                         display: "flex",
@@ -1245,6 +1306,36 @@ export default function Page() {
             >
               Resetar tudo
             </button>
+
+            <hr style={{ border: 0, borderTop: "1px solid var(--border)", margin: "14px 0" }} />
+
+            <div style={{ display: "grid", gap: 8 }}>
+              <h3 style={{ margin: 0, fontSize: 14 }}>Importar e exportar CSV</h3>
+              <div style={small}>Seção separada para backup e restauração dos dados.</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button style={btn} onClick={() => exportAsCsv({ ingredients, drinks, settings })}>
+                  Exportar CSV
+                </button>
+                <button style={btn} onClick={triggerCsvImport}>
+                  Importar CSV
+                </button>
+              </div>
+              <input
+                ref={csvInputRef}
+                type="file"
+                accept=".csv,text/csv"
+                style={{ display: "none" }}
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+
+                  const shouldReplace = confirm("Importar CSV e substituir os dados atuais?");
+                  if (shouldReplace) await importFromCsvFile(file);
+
+                  e.currentTarget.value = "";
+                }}
+              />
+            </div>
           </div>
         )}
 
@@ -1332,7 +1423,11 @@ export default function Page() {
     <button
       style={btnDanger}
       disabled={!activeDrink.photoDataUrl}
-      onClick={() => updateDrink(activeDrink.id, { photoDataUrl: undefined })}
+      onClick={() => {
+        if (!activeDrink.photoDataUrl) return;
+        if (!confirm("Remover a foto deste drink?")) return;
+        updateDrink(activeDrink.id, { photoDataUrl: undefined });
+      }}
     >
       Remover foto
     </button>
@@ -1377,7 +1472,16 @@ export default function Page() {
                       <div style={{ display: "flex", gap: 8 }}>
                         <button style={btn} onClick={() => addItemToDrink(activeDrink.id)} disabled={!ingredients.length}>+ Item</button>
                         <button style={btn} onClick={() => duplicateDrink(activeDrink.id)}>Duplicar drink</button>
-                        <button style={btnDanger} onClick={() => removeDrink(activeDrink.id)}>Remover drink</button>
+                        <button
+                          style={btnDanger}
+                          onClick={() => {
+                            const shouldRemove = confirm(`Remover o drink "${activeDrink.name || "Sem nome"}"?`);
+                            if (!shouldRemove) return;
+                            removeDrink(activeDrink.id);
+                          }}
+                        >
+                          Remover drink
+                        </button>
                       </div>
                     </div>
 
