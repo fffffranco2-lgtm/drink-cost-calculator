@@ -518,6 +518,18 @@ function pillStyle(active: boolean): React.CSSProperties {
   };
 }
 
+function compactPillStyle(active: boolean): React.CSSProperties {
+  return {
+    ...pillStyle(active),
+    padding: "4px 6px",
+    fontSize: 11,
+    fontWeight: 600,
+    textAlign: "center",
+    width: "100%",
+    minWidth: 0,
+  };
+}
+
 export default function Page() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const csvInputRef = useRef<HTMLInputElement | null>(null);
@@ -888,11 +900,11 @@ export default function Page() {
 
   const logout = async () => {
     if (!supabase) {
-      window.location.href = "/admin/login";
+      window.location.href = "/";
       return;
     }
     await supabase.auth.signOut();
-    window.location.href = "/admin/login";
+    window.location.href = "/";
   };
 
   const triggerCsvImport = () => {
@@ -1004,6 +1016,9 @@ export default function Page() {
       .ingredient-two-grid {
         grid-template-columns: 1fr !important;
       }
+      .recipe-list-grid {
+        grid-template-columns: 1fr !important;
+      }
       .kpi-grid {
         grid-template-columns: 1fr !important;
       }
@@ -1037,8 +1052,25 @@ export default function Page() {
     return [...drinks]
       .filter((d) => (q ? d.name.toLowerCase().includes(q) : true))
       .sort((a, b) => a.name.localeCompare(b.name))
-      .map((d) => ({ d, prices: getFinalPriceForDrink(d.id), publicPrice: getPublicMenuPriceForDrink(d) }));
-  }, [drinks, menuSearch, computedByDrinkId, settings.roundingMode, settings.markup, settings.targetCmv]);
+      .map((d) => {
+        const nameWidthCh = Math.max(10, Math.min(22, d.name.trim().length + 2));
+        const ingredientNames = Array.from(
+          new Set(
+            d.items
+              .map((item) => ingredientMap.get(item.ingredientId)?.name?.trim())
+              .filter((name): name is string => Boolean(name))
+          )
+        );
+
+        return {
+          d,
+          prices: getFinalPriceForDrink(d.id),
+          publicPrice: getPublicMenuPriceForDrink(d),
+          ingredientNames,
+          nameWidthCh,
+        };
+      });
+  }, [drinks, menuSearch, computedByDrinkId, ingredientMap, settings.roundingMode, settings.markup, settings.targetCmv]);
 
   return (
     <div style={page}>
@@ -1110,7 +1142,7 @@ export default function Page() {
                   : { marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }
               }
             >
-              {cartaRows.map(({ d, prices, publicPrice }) =>
+              {cartaRows.map(({ d, prices, publicPrice, ingredientNames, nameWidthCh }) =>
                 cartaViewMode === "cards" ? (
                   <div
                     key={d.id}
@@ -1120,13 +1152,13 @@ export default function Page() {
                       background: "white",
                       overflow: "hidden",
                       aspectRatio: "4 / 5",
-                      display: "flex",
-                      flexDirection: "column",
+                      display: "grid",
+                      gridTemplateRows: "3fr 2fr",
                     }}
                   >
                     <div
                       style={{
-                        flex: "0 0 52%",
+                        minHeight: 0,
                         background: "var(--panel2)",
                         borderBottom: "1px solid var(--border)",
                         display: "flex",
@@ -1143,10 +1175,10 @@ export default function Page() {
                       )}
                     </div>
 
-                    <div style={{ padding: 12 }}>
-                      <div style={{ fontSize: 16, fontWeight: 650 }}>{d.name}</div>
-                      {d.notes ? <div style={{ ...small, marginTop: 4 }}>{d.notes}</div> : null}
-                      <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, fontSize: 13 }}>
+                    <div style={{ padding: 8, minHeight: 0, overflow: "auto" }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.15 }}>{d.name}</div>
+                      {d.notes ? <div style={{ ...small, marginTop: 3, fontSize: 11 }}>{d.notes}</div> : null}
+                      <label style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6, fontSize: 12 }}>
                         <input
                           type="checkbox"
                           checked={Boolean(d.showOnPublicMenu)}
@@ -1156,49 +1188,128 @@ export default function Page() {
                       </label>
 
                       <div style={{ marginTop: 8 }}>
-                        <div style={small}>Preço no cardápio público</div>
-                        <div style={{ marginTop: 6, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                          <div style={pillStyle((d.publicMenuPriceMode ?? "markup") === "markup")} onClick={() => updateDrink(d.id, { publicMenuPriceMode: "markup" })}>
+                        <div style={{ ...small, fontSize: 11 }}>Preço no cardápio público</div>
+                        <div
+                          style={{
+                            marginTop: 4,
+                            display: "grid",
+                            gridTemplateColumns: "1fr 1fr 1fr 58px",
+                            gap: 4,
+                            alignItems: "center",
+                          }}
+                        >
+                          <div style={compactPillStyle((d.publicMenuPriceMode ?? "markup") === "markup")} onClick={() => updateDrink(d.id, { publicMenuPriceMode: "markup" })}>
                             Markup
                           </div>
-                          <div style={pillStyle(d.publicMenuPriceMode === "cmv")} onClick={() => updateDrink(d.id, { publicMenuPriceMode: "cmv" })}>
+                          <div style={compactPillStyle(d.publicMenuPriceMode === "cmv")} onClick={() => updateDrink(d.id, { publicMenuPriceMode: "cmv" })}>
                             CMV
                           </div>
-                          <div style={pillStyle(d.publicMenuPriceMode === "manual")} onClick={() => updateDrink(d.id, { publicMenuPriceMode: "manual" })}>
+                          <div style={compactPillStyle(d.publicMenuPriceMode === "manual")} onClick={() => updateDrink(d.id, { publicMenuPriceMode: "manual" })}>
                             Manual
                           </div>
-                        </div>
-                        <div style={{ marginTop: 8 }}>
                           <NumberField
-                            style={{ ...input, width: 130 }}
+                            style={{ ...input, width: 58, padding: "4px 6px", fontSize: 11, borderRadius: 999, textAlign: "center" }}
                             value={d.manualPublicPrice ?? 0}
                             decimals={2}
                             min={0}
                             onCommit={(n) => updateDrink(d.id, { manualPublicPrice: n })}
                           />
                         </div>
-                        <div style={{ ...small, marginTop: 6 }}>
+                        <div style={{ ...small, marginTop: 4, fontSize: 11 }}>
                           Preço selecionado: {formatBRL(publicPrice)}
                         </div>
                       </div>
 
-                      <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+                      <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
                         {prices.map((p) => (
                           <div key={p.label} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                            <div style={small}>{p.label}</div>
-                            <div style={{ fontSize: 17, fontWeight: 650 }}>{formatBRL(p.value)}</div>
+                            <div style={{ ...small, fontSize: 11 }}>{p.label}</div>
+                            <div style={{ fontSize: 14, fontWeight: 650 }}>{formatBRL(p.value)}</div>
                           </div>
                         ))}
                       </div>
                     </div>
                   </div>
                 ) : (
-                  <div key={d.id} style={{ border: "1px solid var(--border)", borderRadius: 16, padding: 12, background: "white" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                      <div>
-                        <div style={{ fontSize: 16, fontWeight: 650 }}>{d.name}</div>
-                        {d.notes ? <div style={small}>{d.notes}</div> : null}
-                        <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, fontSize: 13 }}>
+                  <div key={d.id} style={{ border: "1px solid var(--border)", borderRadius: 14, padding: 9, background: "white" }}>
+                    <div
+                      className="recipe-list-grid"
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "1.2fr 1.1fr 0.9fr",
+                        gap: 10,
+                        alignItems: "start",
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          justifyContent: "center",
+                          alignItems: "center",
+                          textAlign: "center",
+                          height: "100%",
+                        }}
+                      >
+                        <div style={{ fontSize: 18, fontWeight: 800, lineHeight: 1.1, display: "inline-block", maxWidth: "100%", width: `${nameWidthCh}ch` }}>
+                          {d.name}
+                        </div>
+                        <div
+                          style={{
+                            ...small,
+                            fontSize: 11,
+                            marginTop: 4,
+                            color: "#7a8793",
+                            display: "inline-block",
+                            maxWidth: "100%",
+                            width: `min(${nameWidthCh * 2}ch, 100%)`,
+                          }}
+                        >
+                          {ingredientNames.length ? ingredientNames.join(" • ") : "Sem ingredientes"}
+                        </div>
+                        {d.notes ? <div style={{ ...small, fontSize: 11 }}>{d.notes}</div> : null}
+                      </div>
+
+                      <div
+                        style={{
+                          display: "flex",
+                          flexDirection: "column",
+                          justifyContent: "center",
+                          alignItems: "center",
+                          textAlign: "center",
+                          height: "100%",
+                        }}
+                      >
+                        <div style={{ ...small, fontSize: 11 }}>Preço no cardápio público</div>
+                        <div
+                          style={{
+                            marginTop: 4,
+                            display: "grid",
+                            gridTemplateColumns: "1fr 1fr 1fr 58px",
+                            gap: 4,
+                            alignItems: "center",
+                            width: "100%",
+                            maxWidth: 260,
+                          }}
+                        >
+                          <div style={compactPillStyle((d.publicMenuPriceMode ?? "markup") === "markup")} onClick={() => updateDrink(d.id, { publicMenuPriceMode: "markup" })}>
+                            Markup
+                          </div>
+                          <div style={compactPillStyle(d.publicMenuPriceMode === "cmv")} onClick={() => updateDrink(d.id, { publicMenuPriceMode: "cmv" })}>
+                            CMV
+                          </div>
+                          <div style={compactPillStyle(d.publicMenuPriceMode === "manual")} onClick={() => updateDrink(d.id, { publicMenuPriceMode: "manual" })}>
+                            Manual
+                          </div>
+                          <NumberField
+                            style={{ ...input, width: 58, padding: "4px 6px", fontSize: 11, borderRadius: 999, textAlign: "center" }}
+                            value={d.manualPublicPrice ?? 0}
+                            decimals={2}
+                            min={0}
+                            onCommit={(n) => updateDrink(d.id, { manualPublicPrice: n })}
+                          />
+                        </div>
+                        <label style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "center", marginTop: 6, fontSize: 12 }}>
                           <input
                             type="checkbox"
                             checked={Boolean(d.showOnPublicMenu)}
@@ -1206,41 +1317,26 @@ export default function Page() {
                           />
                           Exibir no cardápio público
                         </label>
-                        <div style={{ marginTop: 8 }}>
-                          <div style={small}>Preço no cardápio público</div>
-                          <div style={{ marginTop: 6, display: "flex", gap: 8, flexWrap: "wrap" }}>
-                            <div style={pillStyle((d.publicMenuPriceMode ?? "markup") === "markup")} onClick={() => updateDrink(d.id, { publicMenuPriceMode: "markup" })}>
-                              Markup
-                            </div>
-                            <div style={pillStyle(d.publicMenuPriceMode === "cmv")} onClick={() => updateDrink(d.id, { publicMenuPriceMode: "cmv" })}>
-                              CMV
-                            </div>
-                            <div style={pillStyle(d.publicMenuPriceMode === "manual")} onClick={() => updateDrink(d.id, { publicMenuPriceMode: "manual" })}>
-                              Manual
-                            </div>
-                          </div>
-                          <div style={{ marginTop: 8 }}>
-                            <NumberField
-                              style={{ ...input, width: 130 }}
-                              value={d.manualPublicPrice ?? 0}
-                              decimals={2}
-                              min={0}
-                              onCommit={(n) => updateDrink(d.id, { manualPublicPrice: n })}
-                            />
-                          </div>
-                          <div style={{ ...small, marginTop: 6 }}>
-                            Preço selecionado: {formatBRL(publicPrice)}
-                          </div>
-                        </div>
                       </div>
 
-                      <div style={{ display: "flex", gap: 12, alignItems: "baseline", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                         {prices.map((p) => (
-                          <div key={p.label} style={{ textAlign: "right" }}>
-                            <div style={small}>{p.label}</div>
-                            <div style={{ fontSize: 18, fontWeight: 650 }}>{formatBRL(p.value)}</div>
+                          <div key={p.label} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                            <div style={{ ...small, fontSize: 11 }}>{p.label}</div>
+                            <div style={{ fontSize: 13, fontWeight: 650 }}>{formatBRL(p.value)}</div>
                           </div>
                         ))}
+                        <div
+                          style={{
+                            border: "1px solid var(--border)",
+                            borderRadius: 10,
+                            padding: "7px 8px",
+                            background: "var(--panel2)",
+                          }}
+                        >
+                          <div style={{ ...small, fontSize: 10 }}>Selecionado</div>
+                          <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRL(publicPrice)}</div>
+                        </div>
                       </div>
                     </div>
                   </div>

@@ -74,7 +74,7 @@ export default function AdminLoginPage() {
           onChange={(e) => setEmail(e.target.value)}
           placeholder="E-mail"
           autoComplete="email"
-          style={{ width: "100%", padding: 12, borderRadius: 12, border: "1px solid #dccdb8" }}
+          style={{ width: "100%", padding: 12, borderRadius: 12, border: "1px solid #dccdb8", color: "#111111" }}
         />
         <input
           type="password"
@@ -82,7 +82,7 @@ export default function AdminLoginPage() {
           onChange={(e) => setPassword(e.target.value)}
           placeholder="Senha"
           autoComplete="current-password"
-          style={{ width: "100%", padding: 12, borderRadius: 12, border: "1px solid #dccdb8" }}
+          style={{ width: "100%", padding: 12, borderRadius: 12, border: "1px solid #dccdb8", color: "#111111" }}
         />
 
         {error ? <div style={{ fontSize: 12, color: "#b00020" }}>{error}</div> : null}

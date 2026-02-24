@@ -11,6 +11,7 @@ type RoundingMode = "none" | "end_90" | "end_00" | "end_50";
 
 type Ingredient = {
   id: string;
+  name?: string;
   pricingModel: PricingModel;
   costPerMl?: number;
   bottlePrice?: number;
@@ -231,6 +232,7 @@ export default function PublicMenuPage() {
 
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
+    const ingredientMap = new Map(ingredients.map((i) => [i.id, i]));
 
     return drinks
       .filter((d) => d.showOnPublicMenu)
@@ -240,6 +242,13 @@ export default function PublicMenuPage() {
         const cost = computeDrinkCost(drink, ingredients, settings);
         const markup = applyPsychRounding(cost * settings.markup, settings.roundingMode);
         const cmv = settings.targetCmv > 0 ? applyPsychRounding(cost / settings.targetCmv, settings.roundingMode) : 0;
+        const ingredientNames = Array.from(
+          new Set(
+            drink.items
+              .map((item) => ingredientMap.get(item.ingredientId)?.name?.trim())
+              .filter((name): name is string => Boolean(name))
+          )
+        );
 
         const price =
           settings.publicMenuPriceVisibility === "none"
@@ -253,6 +262,7 @@ export default function PublicMenuPage() {
         return {
           drink,
           price,
+          ingredientNames,
         };
       });
   }, [drinks, ingredients, search, settings]);
@@ -302,16 +312,16 @@ export default function PublicMenuPage() {
     <div style={page}>
       <div style={container}>
         <div style={{ ...card, marginBottom: 14, background: "linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%)" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
-            <div>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
+            <div style={{ textAlign: "center" }}>
               <h1 style={{ margin: 0, fontSize: 26, letterSpacing: -0.5 }}>Cardápio de Drinks</h1>
-              <div style={small}>
+              <div style={{ ...small, color: "#7a8793" }}>
                 Seção pública com drinks selecionados
                 {hydrating ? " • carregando..." : dataSource === "supabase" ? " • dados do Supabase" : " • erro ao carregar"}
               </div>
             </div>
 
-            <Link href="/admin" style={{ textDecoration: "none", padding: "10px 13px", borderRadius: 12, border: "1px solid var(--border)", background: "var(--panel2)", color: "var(--ink)", fontWeight: 600 }}>
+            <Link href="/admin" style={{ textDecoration: "none", padding: "6px 10px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--panel2)", color: "#7a8793", fontWeight: 600, fontSize: 12 }}>
               Ir para área interna
             </Link>
           </div>
@@ -331,8 +341,16 @@ export default function PublicMenuPage() {
             onChange={(e) => setSearch(e.target.value)}
           />
 
-          <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
-            {rows.map(({ drink, price }) => (
+          <div
+            style={{
+              marginTop: 12,
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(220px, 220px))",
+              justifyContent: "center",
+              gap: 12,
+            }}
+          >
+            {rows.map(({ drink, price, ingredientNames }) => (
               <div
                 key={drink.id}
                 style={{
@@ -341,13 +359,13 @@ export default function PublicMenuPage() {
                   background: "white",
                   overflow: "hidden",
                   aspectRatio: "4 / 5",
-                  display: "flex",
-                  flexDirection: "column",
+                  display: "grid",
+                  gridTemplateRows: "4fr 1fr",
                 }}
               >
                 <div
                   style={{
-                    flex: "0 0 52%",
+                    minHeight: 0,
                     background: "var(--panel2)",
                     borderBottom: "1px solid var(--border)",
                     display: "flex",
@@ -364,14 +382,27 @@ export default function PublicMenuPage() {
                   )}
                 </div>
 
-                <div style={{ padding: 12 }}>
-                  <div style={{ fontSize: 16, fontWeight: 650 }}>{drink.name}</div>
-                  {drink.notes ? <div style={{ ...small, marginTop: 4 }}>{drink.notes}</div> : null}
+                <div style={{ padding: 10, display: "flex", flexDirection: "column", justifyContent: "center", textAlign: "center", minHeight: 0 }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, lineHeight: 1.1 }}>{drink.name}</div>
+                  <div
+                    style={{
+                      ...small,
+                      marginTop: 4,
+                      fontSize: 11,
+                      lineHeight: 1.25,
+                      color: "#7a8793",
+                      display: "-webkit-box",
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: "vertical",
+                      overflow: "hidden",
+                    }}
+                  >
+                    {ingredientNames.length ? ingredientNames.join(" • ") : "Sem ingredientes cadastrados"}
+                  </div>
 
                   {price !== null && (
-                    <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", gap: 10 }}>
-                      <div style={small}>Preço</div>
-                      <div style={{ fontSize: 17, fontWeight: 650 }}>{formatBRL(price)}</div>
+                    <div style={{ marginTop: 5 }}>
+                      <div style={{ fontSize: 13, fontWeight: 650 }}>{formatBRL(price)}</div>
                     </div>
                   )}
                 </div>
