@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { createServerClient } from "@supabase/ssr";
+import { createHmac, timingSafeEqual } from "crypto";
 
 type RecipeUnit = "ml" | "un" | "dash" | "drop";
 type PricingModel = "by_ml" | "by_bottle" | "by_unit";
 type PublicMenuDrinkPriceMode = "markup" | "cmv" | "manual";
 type RoundingMode = "none" | "end_90" | "end_00" | "end_50";
 type OrderStatus = "pendente" | "em_progresso" | "concluido";
+type OrderSource = "mesa_qr" | "balcao";
 
 type Ingredient = {
   id: string;
@@ -54,6 +56,8 @@ type CreateOrderBody = {
   customerName?: string;
   customerPhone?: string;
   notes?: string;
+  tableCode?: string;
+  tableToken?: string;
 };
 
 type OrderRow = {
@@ -63,6 +67,8 @@ type OrderRow = {
   customer_phone: string | null;
   notes: string | null;
   status: OrderStatus;
+  source?: OrderSource | null;
+  table_code?: string | null;
   subtotal: number;
   created_at: string;
   updated_at: string;
@@ -174,6 +180,50 @@ function sanitizeText(value: unknown, maxLen: number) {
   return trimmed.slice(0, maxLen);
 }
 
+function normalizeTableCode(value: unknown) {
+  if (typeof value !== "string") return null;
+  const cleaned = value.trim().toUpperCase().replace(/\s+/g, "");
+  if (!cleaned) return null;
+  if (!/^[A-Z0-9][A-Z0-9_-]{0,19}$/.test(cleaned)) return null;
+  return cleaned;
+}
+
+function makeTableSignature(tableCode: string, secret: string) {
+  return createHmac("sha256", secret).update(tableCode).digest("hex");
+}
+
+function isValidTableSignature(tableCode: string, token: string, secret: string) {
+  const expected = makeTableSignature(tableCode, secret);
+  const expectedBuf = Buffer.from(expected, "hex");
+  const tokenBuf = Buffer.from(token, "hex");
+  if (expectedBuf.length !== tokenBuf.length) return false;
+  return timingSafeEqual(expectedBuf, tokenBuf);
+}
+
+function resolveOrderSource(body: CreateOrderBody) {
+  const tableCode = normalizeTableCode(body.tableCode);
+  if (!tableCode) {
+    return { source: "balcao" as const, tableCode: null };
+  }
+
+  const secret = process.env.TABLE_QR_SIGNING_SECRET?.trim();
+  if (!secret) {
+    return { source: "mesa_qr" as const, tableCode };
+  }
+
+  const token = typeof body.tableToken === "string" ? body.tableToken.trim().toLowerCase() : "";
+  if (!/^[a-f0-9]{64}$/.test(token)) {
+    return { source: "balcao" as const, tableCode: null };
+  }
+
+  const valid = isValidTableSignature(tableCode, token, secret);
+  if (!valid) {
+    return { source: "balcao" as const, tableCode: null };
+  }
+
+  return { source: "mesa_qr" as const, tableCode };
+}
+
 function makeOrderCode() {
   const now = new Date();
   const y = now.getFullYear().toString();
@@ -228,6 +278,7 @@ async function requireAdminUser(request: Request) {
 }
 
 export const dynamic = "force-dynamic";
+const ORDERS_API_DEBUG_VERSION = "orders-api-v2026-02-25-origin";
 
 export async function GET(request: Request) {
   const auth = await requireAdminUser(request);
@@ -279,7 +330,7 @@ export async function GET(request: Request) {
 
   let ordersQuery = supabase
     .from("orders")
-    .select("id, code, customer_name, customer_phone, notes, status, subtotal, created_at, updated_at")
+    .select("id, code, customer_name, customer_phone, notes, status, source, table_code, subtotal, created_at, updated_at")
     .order("created_at", { ascending: false })
     .limit(200);
 
@@ -287,7 +338,17 @@ export async function GET(request: Request) {
     ordersQuery = ordersQuery.eq("status", statusFilter);
   }
 
-  const { data: ordersData, error: ordersError } = await ordersQuery;
+  let { data: ordersData, error: ordersError } = await ordersQuery;
+
+  if (ordersError && (ordersError.message.toLowerCase().includes("source") || ordersError.message.toLowerCase().includes("table_code"))) {
+    const fallback = await supabase
+      .from("orders")
+      .select("id, code, customer_name, customer_phone, notes, status, subtotal, created_at, updated_at")
+      .order("created_at", { ascending: false })
+      .limit(200);
+    ordersData = fallback.data;
+    ordersError = fallback.error;
+  }
 
   if (ordersError) {
     return NextResponse.json({ error: "Falha ao listar pedidos." }, { status: 500 });
@@ -295,7 +356,7 @@ export async function GET(request: Request) {
 
   const orders = (ordersData ?? []) as OrderRow[];
   if (!orders.length) {
-    return NextResponse.json({ orders: [], updatedAt });
+    return NextResponse.json({ orders: [], updatedAt, debugVersion: ORDERS_API_DEBUG_VERSION });
   }
 
   const orderIds = orders.map((order) => order.id);
@@ -328,6 +389,7 @@ export async function GET(request: Request) {
   }
 
   return NextResponse.json({
+    debugVersion: ORDERS_API_DEBUG_VERSION,
     updatedAt,
     orders: orders.map((order) => ({
       id: order.id,
@@ -336,6 +398,8 @@ export async function GET(request: Request) {
       customerPhone: order.customer_phone,
       notes: order.notes,
       status: order.status,
+      source: order.source === "mesa_qr" ? "mesa_qr" : "balcao",
+      tableCode: order.source === "mesa_qr" ? order.table_code ?? null : null,
       subtotal: order.subtotal,
       createdAt: order.created_at,
       updatedAt: order.updated_at,
@@ -345,6 +409,8 @@ export async function GET(request: Request) {
         unitPrice: item.unit_price,
         lineTotal: item.line_total,
         notes: item.notes,
+        drinkNotes: item.notes,
+        itemNotes: item.notes,
       })),
     })),
   });
@@ -384,7 +450,7 @@ export async function POST(request: Request) {
       return {
         drinkId,
         qty: Number.isInteger(qty) ? qty : NaN,
-        notes: sanitizeText(item.notes, 240),
+        notes: sanitizeText(item.notes, 50),
       };
     })
     .filter((item) => item.drinkId && Number.isFinite(item.qty));
@@ -469,6 +535,7 @@ export async function POST(request: Request) {
   const customerName = sanitizeText(body.customerName, 80);
   const customerPhone = sanitizeText(body.customerPhone, 30);
   const notes = sanitizeText(body.notes, 400);
+  const origin = resolveOrderSource(body);
 
   let createdOrder:
     | {
@@ -491,6 +558,8 @@ export async function POST(request: Request) {
         customer_phone: customerPhone,
         notes,
         status: "pendente",
+        source: origin.source,
+        table_code: origin.tableCode,
         subtotal,
       })
       .select("id, code, status, subtotal, created_at")
@@ -538,6 +607,8 @@ export async function POST(request: Request) {
       id: createdOrder.id,
       code: createdOrder.code,
       status: createdOrder.status,
+      source: origin.source,
+      tableCode: origin.tableCode,
       subtotal: createdOrder.subtotal,
       createdAt: createdOrder.created_at,
     },

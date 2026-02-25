@@ -280,6 +280,7 @@ type AppStatePayload = {
 };
 
 type OrderStatus = "pendente" | "em_progresso" | "concluido";
+type OrderSource = "mesa_qr" | "balcao";
 
 type AdminOrderItem = {
   drinkName: string;
@@ -287,6 +288,8 @@ type AdminOrderItem = {
   unitPrice: number;
   lineTotal: number;
   notes?: string | null;
+  drinkNotes?: string | null;
+  itemNotes?: string | null;
 };
 
 type AdminOrder = {
@@ -296,6 +299,8 @@ type AdminOrder = {
   customerPhone: string | null;
   notes: string | null;
   status: OrderStatus;
+  source?: OrderSource | null;
+  tableCode?: string | null;
   subtotal: number;
   createdAt: string;
   updatedAt: string;
@@ -724,7 +729,7 @@ export default function Page() {
     try {
       const params = new URLSearchParams();
       if (ordersUpdatedAt) params.set("since", ordersUpdatedAt);
-      const endpoint = params.size ? `/admin/api/orders?${params.toString()}` : "/admin/api/orders";
+      const endpoint = params.size ? `/api/orders?${params.toString()}` : "/api/orders";
       const res = await fetch(endpoint, { cache: "no-store" });
 
       if (res.status === 304) {
@@ -736,7 +741,25 @@ export default function Page() {
         setOrdersError(payload.error ?? "Falha ao carregar pedidos.");
         return;
       }
-      setOrders(Array.isArray(payload.orders) ? payload.orders : []);
+      const normalizedOrders = (Array.isArray(payload.orders) ? payload.orders : []).map((order) => ({
+        ...order,
+        items: (Array.isArray(order.items) ? order.items : []).map((item) => {
+          const notes =
+            typeof item.drinkNotes === "string"
+              ? item.drinkNotes
+              : typeof item.itemNotes === "string"
+              ? item.itemNotes
+              : typeof item.notes === "string"
+              ? item.notes
+              : null;
+          return {
+            ...item,
+            notes,
+            drinkNotes: notes,
+          };
+        }),
+      }));
+      setOrders(normalizedOrders);
       setOrdersUpdatedAt(typeof payload.updatedAt === "string" ? payload.updatedAt : null);
     } catch {
       if (!background) {
@@ -765,7 +788,7 @@ export default function Page() {
       setUpdatingOrderId(orderId);
       setOrdersError("");
       try {
-        const res = await fetch(`/admin/api/orders/${orderId}/status`, {
+        const res = await fetch(`/api/orders/${orderId}/status`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ status }),
@@ -1625,6 +1648,10 @@ export default function Page() {
                           {(order.customerName || "Cliente não informado") + (order.customerPhone ? ` • ${order.customerPhone}` : "")}
                         </div>
 
+                        <div style={{ ...small, marginTop: 2 }}>
+                          Origem: {order.source === "mesa_qr" && order.tableCode ? `Mesa ${order.tableCode}` : "Balcão"}
+                        </div>
+
                         {isExpanded ? (
                           <>
                             <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
@@ -1634,7 +1661,11 @@ export default function Page() {
                                     <div>
                                       {item.qty}x {item.drinkName}
                                     </div>
-                                    {item.notes ? <div style={{ ...small, fontSize: FONT_SCALE.sm }}>Item: {item.notes}</div> : null}
+                                    {item.drinkNotes || item.notes ? (
+                                      <div style={{ ...small, fontSize: FONT_SCALE.sm, marginLeft: 12 }}>
+                                        {item.drinkNotes ?? item.notes}
+                                      </div>
+                                    ) : null}
                                   </div>
                                   <div>{formatBRL(item.lineTotal)}</div>
                                 </div>
@@ -1643,30 +1674,40 @@ export default function Page() {
 
                             {order.notes ? <div style={{ ...small, marginTop: 6 }}>Obs: {order.notes}</div> : null}
 
-                            <div style={{ marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                              <strong style={{ fontSize: FONT_SCALE.md }}>Total: {formatBRL(order.subtotal)}</strong>
-                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                                {statusKey === "pendente" && (
-                                  <button style={{ ...btn, ...statusButtonStyle }} disabled={updatingOrderId === order.id} onClick={(e) => { e.stopPropagation(); void moveOrderTo(order.id, "em_progresso"); }}>
-                                    Em progresso
-                                  </button>
-                                )}
-                                {statusKey === "em_progresso" && (
-                                  <>
-                                    <button style={{ ...btn, ...statusButtonStyle }} disabled={updatingOrderId === order.id} onClick={(e) => { e.stopPropagation(); void moveOrderTo(order.id, "pendente"); }}>
-                                      Voltar
-                                    </button>
-                                    <button style={{ ...btn, ...statusButtonStyle }} disabled={updatingOrderId === order.id} onClick={(e) => { e.stopPropagation(); void moveOrderTo(order.id, "concluido"); }}>
-                                      Concluir
-                                    </button>
-                                  </>
-                                )}
-                                {statusKey === "concluido" && (
-                                  <button style={{ ...btn, ...statusButtonStyle }} disabled={updatingOrderId === order.id} onClick={(e) => { e.stopPropagation(); void moveOrderTo(order.id, "em_progresso"); }}>
-                                    Reabrir
-                                  </button>
-                                )}
-                              </div>
+                            <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "34px 1fr 34px", alignItems: "center", gap: 8 }}>
+                              {statusKey === "em_progresso" || statusKey === "concluido" ? (
+                                <button
+                                  aria-label="Mover para a esquerda"
+                                  style={{ ...btn, ...statusButtonStyle, width: 34, height: 34, padding: 0, borderRadius: 999, fontSize: FONT_SCALE.lg, lineHeight: 1 }}
+                                  disabled={updatingOrderId === order.id}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void moveOrderTo(order.id, "em_progresso" === statusKey ? "pendente" : "em_progresso");
+                                  }}
+                                >
+                                  ←
+                                </button>
+                              ) : (
+                                <div />
+                              )}
+
+                              <strong style={{ fontSize: FONT_SCALE.md, textAlign: "center" }}>Total: {formatBRL(order.subtotal)}</strong>
+
+                              {statusKey === "pendente" || statusKey === "em_progresso" ? (
+                                <button
+                                  aria-label="Mover para a direita"
+                                  style={{ ...btn, ...statusButtonStyle, width: 34, height: 34, padding: 0, borderRadius: 999, fontSize: FONT_SCALE.lg, lineHeight: 1 }}
+                                  disabled={updatingOrderId === order.id}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    void moveOrderTo(order.id, statusKey === "pendente" ? "em_progresso" : "concluido");
+                                  }}
+                                >
+                                  →
+                                </button>
+                              ) : (
+                                <div />
+                              )}
                             </div>
                           </>
                         ) : null}

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
 type OrderStatus = "pendente" | "em_progresso" | "concluido";
+type OrderSource = "mesa_qr" | "balcao";
 
 type OrderRow = {
   id: string;
@@ -10,6 +11,8 @@ type OrderRow = {
   customer_phone: string | null;
   notes: string | null;
   status: OrderStatus;
+  source?: OrderSource | null;
+  table_code?: string | null;
   subtotal: number;
   created_at: string;
   updated_at: string;
@@ -70,7 +73,7 @@ export async function GET(request: Request) {
 
   let ordersQuery = supabase
     .from("orders")
-    .select("id, code, customer_name, customer_phone, notes, status, subtotal, created_at, updated_at")
+    .select("id, code, customer_name, customer_phone, notes, status, source, table_code, subtotal, created_at, updated_at")
     .order("created_at", { ascending: false })
     .limit(200);
 
@@ -78,7 +81,17 @@ export async function GET(request: Request) {
     ordersQuery = ordersQuery.eq("status", statusFilter);
   }
 
-  const { data: ordersData, error: ordersError } = await ordersQuery;
+  let { data: ordersData, error: ordersError } = await ordersQuery;
+
+  if (ordersError && (ordersError.message.toLowerCase().includes("source") || ordersError.message.toLowerCase().includes("table_code"))) {
+    const fallback = await supabase
+      .from("orders")
+      .select("id, code, customer_name, customer_phone, notes, status, subtotal, created_at, updated_at")
+      .order("created_at", { ascending: false })
+      .limit(200);
+    ordersData = fallback.data;
+    ordersError = fallback.error;
+  }
 
   if (ordersError) {
     return NextResponse.json({ error: "Falha ao listar pedidos." }, { status: 500 });
@@ -115,6 +128,8 @@ export async function GET(request: Request) {
       customerPhone: order.customer_phone,
       notes: order.notes,
       status: order.status,
+      source: order.source === "mesa_qr" ? "mesa_qr" : "balcao",
+      tableCode: order.source === "mesa_qr" ? order.table_code ?? null : null,
       subtotal: order.subtotal,
       createdAt: order.created_at,
       updatedAt: order.updated_at,

@@ -10,7 +10,8 @@
     "supabase": "supabase",
     "supabase:link": "supabase link --project-ref cukfuavlylrlsfukxbot",
     "supabase:db:push": "supabase db push",
-    "supabase:migration:new": "supabase migration new"
+    "supabase:migration:new": "supabase migration new",
+    "tables:qr:urls": "node scripts/generate-table-qr-urls.mjs"
   },
   "engines": {
     "node": ">=20.9.0"

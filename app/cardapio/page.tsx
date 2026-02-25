@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import React, { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 
 type RecipeUnit = "ml" | "un" | "dash" | "drop";
 type PricingModel = "by_ml" | "by_bottle" | "by_unit";
@@ -85,6 +86,8 @@ type CreateOrderResponse = {
     id: string;
     code: string;
     status: string;
+    source?: "mesa_qr" | "balcao";
+    tableCode?: string | null;
     subtotal: number;
     createdAt: string;
   };
@@ -154,6 +157,14 @@ function clamp(n: number, min: number, max: number) {
 
 function roundMoney(value: number) {
   return Math.round(value * 100) / 100;
+}
+
+function normalizeTableCode(value: string | null) {
+  if (!value) return null;
+  const cleaned = value.trim().toUpperCase().replace(/\s+/g, "");
+  if (!cleaned) return null;
+  if (!/^[A-Z0-9][A-Z0-9_-]{0,19}$/.test(cleaned)) return null;
+  return cleaned;
 }
 
 function applyPsychRounding(price: number, mode: RoundingMode) {
@@ -275,6 +286,15 @@ function writeCart(items: CartItem[]) {
 }
 
 export default function PublicMenuPage() {
+  const searchParams = useSearchParams();
+  const qrTableCode = useMemo(
+    () => normalizeTableCode(searchParams.get("mesa") ?? searchParams.get("table") ?? searchParams.get("m")),
+    [searchParams]
+  );
+  const qrTableToken = useMemo(
+    () => (searchParams.get("token") ?? searchParams.get("t") ?? "").trim().toLowerCase().slice(0, 128),
+    [searchParams]
+  );
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [drinks, setDrinks] = useState<Drink[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -474,7 +494,7 @@ export default function PublicMenuPage() {
     const row = rowByDrinkId.get(drinkId);
     if (!row) return;
     const safeQty = Math.max(1, Math.min(30, Math.floor(qty)));
-    const drinkNotes = drinkNotesRaw.trim().slice(0, 240);
+    const drinkNotes = drinkNotesRaw.trim().slice(0, 50);
 
     setCartItems((prev) => {
       const idx = prev.findIndex((item) => item.drinkId === drinkId && (item.drinkNotes ?? "") === drinkNotes);
@@ -523,7 +543,7 @@ export default function PublicMenuPage() {
   };
 
   const saveCartItemNotes = (itemId: string) => {
-    const normalizedNotes = editingDrinkNotes.trim().slice(0, 240);
+    const normalizedNotes = editingDrinkNotes.trim().slice(0, 50);
 
     setCartItems((prev) => {
       const current = prev.find((item) => item.id === itemId);
@@ -578,6 +598,8 @@ export default function PublicMenuPage() {
           customerName,
           customerPhone,
           notes: orderNotes,
+          tableCode: qrTableCode,
+          tableToken: qrTableToken || undefined,
         }),
       });
 
@@ -684,6 +706,10 @@ export default function PublicMenuPage() {
         </div>
 
         <div style={{ display: "grid", justifyItems: "center" }}>
+          <div style={{ width: menuSectionWidth, marginBottom: 10, textAlign: "center", color: "var(--brand-cream)", fontSize: fontScale.sm, opacity: 0.95 }}>
+            Origem do pedido: {qrTableCode ? `Mesa ${qrTableCode}` : "Balcão"}
+          </div>
+
           {loadError ? (
             <div style={{ width: menuSectionWidth, marginBottom: 12, padding: 10, borderRadius: 12, border: "1px solid var(--danger-border)", background: "var(--danger-bg)", color: "var(--danger-ink)", fontSize: fontScale.sm }}>
               {loadError}
@@ -934,7 +960,7 @@ export default function PublicMenuPage() {
                     placeholder="Ex.: pouco gelo, sem canudo..."
                     value={modalDrinkNotes}
                     onChange={(e) => setModalDrinkNotes(e.target.value)}
-                    maxLength={240}
+                    maxLength={50}
                   />
                 </div>
                 <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -1073,7 +1099,7 @@ export default function PublicMenuPage() {
                                   placeholder="Observações (opcional)"
                                   value={editingDrinkNotes}
                                   onChange={(e) => setEditingDrinkNotes(e.target.value)}
-                                  maxLength={240}
+                                  maxLength={50}
                                 />
                                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
                                   <button

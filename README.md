@@ -20,6 +20,55 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Pedidos Por Origem (Mesa/Balcao)
+
+O sistema de pedidos agora suporta origem:
+- `mesa_qr`: pedido feito via URL de QR com `mesa` + `token`
+- `balcao`: pedido sem contexto de mesa valido
+
+### 1. Aplicar migration
+
+```bash
+npm run supabase:db:push
+```
+
+Se pedir autenticacao da CLI, rode:
+
+```bash
+npm run supabase -- login
+```
+
+Ou exporte o token:
+
+```bash
+export SUPABASE_ACCESS_TOKEN=seu_token
+```
+
+### 2. Configurar assinatura dos QRs
+
+No ambiente da aplicacao, defina:
+
+```bash
+TABLE_QR_SIGNING_SECRET=uma_chave_forte_e_privada
+```
+
+### 3. Gerar URLs por mesa
+
+Gerar mesas `M01..M20` em CSV:
+
+```bash
+TABLE_QR_SIGNING_SECRET=... npm run tables:qr:urls -- --count 20 --base-url https://seu-dominio.com
+```
+
+Gerar mesas especificas:
+
+```bash
+TABLE_QR_SIGNING_SECRET=... npm run tables:qr:urls -- --tables M01,M05,M12 --base-url https://seu-dominio.com
+```
+
+Cada URL sai no formato:
+- `/cardapio?mesa=M12&token=...`
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
