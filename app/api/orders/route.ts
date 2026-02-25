@@ -247,9 +247,35 @@ export async function GET(request: Request) {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
-  const statusParam = new URL(request.url).searchParams.get("status");
+  const requestUrl = new URL(request.url);
+  const statusParam = requestUrl.searchParams.get("status");
+  const sinceParam = requestUrl.searchParams.get("since");
   const statusFilter: OrderStatus | null =
     statusParam === "pendente" || statusParam === "em_progresso" || statusParam === "concluido" ? statusParam : null;
+  const since = sinceParam ? new Date(sinceParam) : null;
+
+  let latestOrderQuery = supabase
+    .from("orders")
+    .select("updated_at")
+    .order("updated_at", { ascending: false })
+    .limit(1);
+
+  if (statusFilter) {
+    latestOrderQuery = latestOrderQuery.eq("status", statusFilter);
+  }
+
+  const { data: latestOrderData, error: latestOrderError } = await latestOrderQuery.maybeSingle<{ updated_at: string }>();
+
+  if (latestOrderError) {
+    return NextResponse.json({ error: "Falha ao verificar atualizações de pedidos." }, { status: 500 });
+  }
+
+  const updatedAt = latestOrderData?.updated_at ?? null;
+  const sinceTs = since && Number.isFinite(since.getTime()) ? since.getTime() : null;
+  const updatedAtTs = updatedAt ? new Date(updatedAt).getTime() : null;
+  if (sinceTs !== null && updatedAtTs !== null && updatedAtTs <= sinceTs) {
+    return new NextResponse(null, { status: 304 });
+  }
 
   let ordersQuery = supabase
     .from("orders")
@@ -269,7 +295,7 @@ export async function GET(request: Request) {
 
   const orders = (ordersData ?? []) as OrderRow[];
   if (!orders.length) {
-    return NextResponse.json({ orders: [] });
+    return NextResponse.json({ orders: [], updatedAt });
   }
 
   const orderIds = orders.map((order) => order.id);
@@ -302,6 +328,7 @@ export async function GET(request: Request) {
   }
 
   return NextResponse.json({
+    updatedAt,
     orders: orders.map((order) => ({
       id: order.id,
       code: order.code,

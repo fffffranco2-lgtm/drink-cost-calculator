@@ -14,6 +14,7 @@ type PricingModel = "by_ml" | "by_bottle" | "by_unit";
 type PublicMenuDrinkPriceMode = "markup" | "cmv" | "manual";
 type PublicMenuPriceVisibility = "show" | "none";
 type CartaViewMode = "cards" | "list";
+type RecipeSortMode = "alpha_asc" | "alpha_desc" | "price_asc" | "price_desc" | "cost_asc" | "cost_desc";
 
 /** Arredondamento psicológico */
 type RoundingMode = "none" | "end_90" | "end_00" | "end_50";
@@ -528,6 +529,11 @@ function NumberField(props: {
 }
 
 /* ------------------------------ UI ------------------------------ */
+const FONT_SCALE = {
+  sm: 12,
+  md: 14,
+  lg: 18,
+} as const;
 
 function pillStyle(active: boolean): React.CSSProperties {
   return {
@@ -545,7 +551,7 @@ function compactPillStyle(active: boolean): React.CSSProperties {
   return {
     ...pillStyle(active),
     padding: "4px 6px",
-    fontSize: 11,
+    fontSize: FONT_SCALE.sm,
     fontWeight: 600,
     textAlign: "center",
     width: "100%",
@@ -571,11 +577,16 @@ export default function Page() {
 
   const [menuSearch, setMenuSearch] = useState("");
   const [cartaViewMode, setCartaViewMode] = useState<CartaViewMode>("cards");
+  const [recipeSortMode, setRecipeSortMode] = useState<RecipeSortMode>("alpha_asc");
   const [orders, setOrders] = useState<AdminOrder[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [ordersError, setOrdersError] = useState("");
   const [updatingOrderId, setUpdatingOrderId] = useState<string | null>(null);
-  const ordersReloadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [ordersUpdatedAt, setOrdersUpdatedAt] = useState<string | null>(null);
+  const [expandedCompletedOrders, setExpandedCompletedOrders] = useState<Record<string, boolean>>({});
+  const pendingBucketRef = useRef<HTMLDivElement | null>(null);
+  const inProgressBucketRef = useRef<HTMLDivElement | null>(null);
+  const [completedBucketMaxHeight, setCompletedBucketMaxHeight] = useState<number | null>(null);
 
   const remoteState: AppStatePayload = useMemo(
     () => ({
@@ -703,62 +714,51 @@ export default function Page() {
     return () => clearTimeout(timeout);
   }, [hydratingRemote, localStateJson]);
 
-  const loadOrders = useCallback(async () => {
-    setOrdersLoading(true);
-    setOrdersError("");
+  const loadOrders = useCallback(async (options?: { background?: boolean }) => {
+    const background = Boolean(options?.background);
+    if (!background) {
+      setOrdersLoading(true);
+      setOrdersError("");
+    }
+
     try {
-      const res = await fetch("/api/orders", { cache: "no-store" });
-      const payload = (await res.json()) as { orders?: AdminOrder[]; error?: string };
+      const params = new URLSearchParams();
+      if (ordersUpdatedAt) params.set("since", ordersUpdatedAt);
+      const endpoint = params.size ? `/api/orders?${params.toString()}` : "/api/orders";
+      const res = await fetch(endpoint, { cache: "no-store" });
+
+      if (res.status === 304) {
+        return;
+      }
+
+      const payload = (await res.json()) as { orders?: AdminOrder[]; updatedAt?: string | null; error?: string };
       if (!res.ok) {
         setOrdersError(payload.error ?? "Falha ao carregar pedidos.");
         return;
       }
       setOrders(Array.isArray(payload.orders) ? payload.orders : []);
+      setOrdersUpdatedAt(typeof payload.updatedAt === "string" ? payload.updatedAt : null);
     } catch {
-      setOrdersError("Erro de rede ao carregar pedidos.");
-    } finally {
-      setOrdersLoading(false);
-    }
-  }, []);
-
-  const scheduleOrdersReload = useCallback(
-    (delayMs = 350) => {
-      if (tab !== "orders") return;
-      if (ordersReloadTimeoutRef.current) {
-        clearTimeout(ordersReloadTimeoutRef.current);
+      if (!background) {
+        setOrdersError("Erro de rede ao carregar pedidos.");
       }
-      ordersReloadTimeoutRef.current = setTimeout(() => {
-        ordersReloadTimeoutRef.current = null;
-        void loadOrders();
-      }, delayMs);
-    },
-    [loadOrders, tab]
-  );
+    } finally {
+      if (!background) {
+        setOrdersLoading(false);
+      }
+    }
+  }, [ordersUpdatedAt]);
 
   useEffect(() => {
     if (tab !== "orders") return;
     void loadOrders();
-  }, [tab, loadOrders]);
-
-  useEffect(() => {
-    if (tab !== "orders" || !supabase) return;
-
-    const channel = supabase
-      .channel(`orders-realtime-${Date.now().toString(36)}`)
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "orders" }, () => scheduleOrdersReload())
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "orders" }, () => scheduleOrdersReload())
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "order_items" }, () => scheduleOrdersReload())
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "order_items" }, () => scheduleOrdersReload())
-      .subscribe();
-
+    const interval = setInterval(() => {
+      void loadOrders({ background: true });
+    }, 15000);
     return () => {
-      if (ordersReloadTimeoutRef.current) {
-        clearTimeout(ordersReloadTimeoutRef.current);
-        ordersReloadTimeoutRef.current = null;
-      }
-      void supabase.removeChannel(channel);
+      clearInterval(interval);
     };
-  }, [tab, supabase, scheduleOrdersReload]);
+  }, [tab, loadOrders]);
 
   const moveOrderTo = useCallback(
     async (orderId: string, status: OrderStatus) => {
@@ -1080,7 +1080,7 @@ export default function Page() {
 
   const headerCard: React.CSSProperties = {
     ...card,
-    background: "linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%)",
+    background: "var(--panel2)",
   };
 
   const btn: React.CSSProperties = {
@@ -1107,7 +1107,7 @@ export default function Page() {
     outline: "none",
   };
 
-  const small: React.CSSProperties = { fontSize: 12, color: "var(--muted)" };
+  const small: React.CSSProperties = { fontSize: FONT_SCALE.sm, color: "var(--muted)" };
 
   const topTab = (active: boolean): React.CSSProperties => ({
     ...btn,
@@ -1144,6 +1144,7 @@ export default function Page() {
     const c = computedByDrinkId.get(dId);
     if (!c) return [];
     return [
+      { label: "Custo", value: c.cost },
       { label: `Markup ${settings.markup}x`, value: applyPsychRounding(c.priceMarkup, settings.roundingMode) },
       { label: `CMV ${Math.round(settings.targetCmv * 100)}%`, value: applyPsychRounding(c.priceCmv, settings.roundingMode) },
     ];
@@ -1159,9 +1160,8 @@ export default function Page() {
 
   const cartaRows = useMemo(() => {
     const q = menuSearch.trim().toLowerCase();
-    return [...drinks]
+    const rows = [...drinks]
       .filter((d) => (q ? d.name.toLowerCase().includes(q) : true))
-      .sort((a, b) => a.name.localeCompare(b.name))
       .map((d) => {
         const nameWidthCh = Math.max(10, Math.min(22, d.name.trim().length + 2));
         const ingredientNames = Array.from(
@@ -1174,13 +1174,35 @@ export default function Page() {
 
         return {
           d,
+          cost: computedByDrinkId.get(d.id)?.cost ?? 0,
           prices: getFinalPriceForDrink(d.id),
           publicPrice: getPublicMenuPriceForDrink(d),
           ingredientNames,
           nameWidthCh,
         };
       });
-  }, [drinks, menuSearch, computedByDrinkId, ingredientMap, settings.roundingMode, settings.markup, settings.targetCmv]);
+
+    rows.sort((a, b) => {
+      if (recipeSortMode === "alpha_asc") return a.d.name.localeCompare(b.d.name, "pt-BR");
+      if (recipeSortMode === "alpha_desc") return b.d.name.localeCompare(a.d.name, "pt-BR");
+      if (recipeSortMode === "price_asc") {
+        if (a.publicPrice !== b.publicPrice) return a.publicPrice - b.publicPrice;
+        return a.d.name.localeCompare(b.d.name, "pt-BR");
+      }
+      if (recipeSortMode === "cost_asc") {
+        if (a.cost !== b.cost) return a.cost - b.cost;
+        return a.d.name.localeCompare(b.d.name, "pt-BR");
+      }
+      if (recipeSortMode === "cost_desc") {
+        if (a.cost !== b.cost) return b.cost - a.cost;
+        return a.d.name.localeCompare(b.d.name, "pt-BR");
+      }
+      if (a.publicPrice !== b.publicPrice) return b.publicPrice - a.publicPrice;
+      return a.d.name.localeCompare(b.d.name, "pt-BR");
+    });
+
+    return rows;
+  }, [drinks, menuSearch, computedByDrinkId, ingredientMap, settings.roundingMode, settings.markup, settings.targetCmv, recipeSortMode]);
 
   const groupedOrders = useMemo(
     () => ({
@@ -1199,6 +1221,25 @@ export default function Page() {
       minute: "2-digit",
     });
 
+  const toggleCompletedOrderCard = useCallback((orderId: string) => {
+    setExpandedCompletedOrders((prev) => ({ ...prev, [orderId]: !prev[orderId] }));
+  }, []);
+
+  useEffect(() => {
+    if (tab !== "orders") return;
+
+    const updateCompletedBucketMaxHeight = () => {
+      const pendingHeight = pendingBucketRef.current?.offsetHeight ?? 0;
+      const inProgressHeight = inProgressBucketRef.current?.offsetHeight ?? 0;
+      const maxHeight = Math.max(pendingHeight, inProgressHeight);
+      setCompletedBucketMaxHeight(maxHeight > 0 ? maxHeight : null);
+    };
+
+    updateCompletedBucketMaxHeight();
+    window.addEventListener("resize", updateCompletedBucketMaxHeight);
+    return () => window.removeEventListener("resize", updateCompletedBucketMaxHeight);
+  }, [tab, groupedOrders, expandedCompletedOrders, ordersLoading, ordersError]);
+
   return (
     <div style={page}>
       <style>{focusStyle}</style>
@@ -1207,15 +1248,12 @@ export default function Page() {
         <div style={{ ...headerCard, marginBottom: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
             <div>
-              <h1 style={{ margin: 0, fontSize: 22, letterSpacing: -0.2 }}>Custos de Drinks</h1>
+              <h1 style={{ margin: 0, fontSize: FONT_SCALE.lg, letterSpacing: -0.2 }}>Custos de Drinks</h1>
               <div style={small}>Área interna da operação • Arredondamento psicológico • Inputs numéricos editáveis</div>
               {remoteError ? <div style={{ ...small, color: "#b00020", marginTop: 4 }}>{remoteError}</div> : null}
             </div>
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-              <button style={btn} onClick={addDrink}>+ Drink</button>
-              <button style={btn} onClick={addIngredient}>+ Ingrediente</button>
-
               <Link href="/" style={{ ...btn, textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
                 Cardápio público
               </Link>
@@ -1238,7 +1276,7 @@ export default function Page() {
         {tab === "receitas" && (
           <div style={card}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-              <h2 style={{ marginTop: 0, fontSize: 16, marginBottom: 10 }}>Receitas</h2>
+              <h2 style={{ marginTop: 0, fontSize: FONT_SCALE.lg, marginBottom: 10 }}>Receitas</h2>
               <div style={small}>
                 Arredondamento: {settings.roundingMode === "none" ? "Nenhum" : settings.roundingMode === "end_90" ? ",90" : settings.roundingMode === "end_00" ? ",00" : ",50"}
               </div>
@@ -1252,14 +1290,32 @@ export default function Page() {
             />
 
             <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <div style={small}>Visualização das Receitas</div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <div style={pillStyle(cartaViewMode === "cards")} onClick={() => setCartaViewMode("cards")}>
-                  Cards (com foto)
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <div style={small}>Visualização das Receitas</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <div style={pillStyle(cartaViewMode === "cards")} onClick={() => setCartaViewMode("cards")}>
+                    Cards
+                  </div>
+                  <div style={pillStyle(cartaViewMode === "list")} onClick={() => setCartaViewMode("list")}>
+                    Lista
+                  </div>
                 </div>
-                <div style={pillStyle(cartaViewMode === "list")} onClick={() => setCartaViewMode("list")}>
-                  Lista (sem foto)
-                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <label htmlFor="recipe-sort" style={small}>Ordenar por</label>
+                <select
+                  id="recipe-sort"
+                  style={{ ...input, width: "auto", minWidth: 240, padding: "10px 12px" }}
+                  value={recipeSortMode}
+                  onChange={(e) => setRecipeSortMode(e.target.value as RecipeSortMode)}
+                >
+                  <option value="alpha_asc">Alfabética (A-Z)</option>
+                  <option value="alpha_desc">Alfabética (Z-A)</option>
+                  <option value="price_asc">Preço (menor-maior)</option>
+                  <option value="price_desc">Preço (maior-menor)</option>
+                  <option value="cost_asc">Custo (menor-maior)</option>
+                  <option value="cost_desc">Custo (maior-menor)</option>
+                </select>
               </div>
             </div>
 
@@ -1279,9 +1335,9 @@ export default function Page() {
                       borderRadius: 16,
                       background: "white",
                       overflow: "hidden",
-                      aspectRatio: "4 / 5",
+                      aspectRatio: "4 / 6.4",
                       display: "grid",
-                      gridTemplateRows: "3fr 2fr",
+                      gridTemplateRows: "1fr 1fr",
                     }}
                   >
                     <div
@@ -1293,7 +1349,7 @@ export default function Page() {
                         alignItems: "center",
                         justifyContent: "center",
                         color: "var(--muted)",
-                        fontSize: 12,
+                        fontSize: FONT_SCALE.sm,
                       }}
                     >
                       {d.photoDataUrl ? (
@@ -1303,10 +1359,10 @@ export default function Page() {
                       )}
                     </div>
 
-                    <div style={{ padding: 8, minHeight: 0, overflow: "auto" }}>
-                      <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.15 }}>{d.name}</div>
-                      {d.notes ? <div style={{ ...small, marginTop: 3, fontSize: 11 }}>{d.notes}</div> : null}
-                      <label style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6, fontSize: 12 }}>
+                    <div style={{ padding: 8, minHeight: 0, overflow: "hidden" }}>
+                      <div style={{ fontSize: FONT_SCALE.md, fontWeight: 700, lineHeight: 1.15 }}>{d.name}</div>
+                      {d.notes ? <div style={{ ...small, marginTop: 3, fontSize: FONT_SCALE.sm }}>{d.notes}</div> : null}
+                      <label style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6, fontSize: FONT_SCALE.sm }}>
                         <input
                           type="checkbox"
                           checked={Boolean(d.showOnPublicMenu)}
@@ -1316,7 +1372,7 @@ export default function Page() {
                       </label>
 
                       <div style={{ marginTop: 8 }}>
-                        <div style={{ ...small, fontSize: 11 }}>Preço no cardápio público</div>
+                        <div style={{ ...small, fontSize: FONT_SCALE.sm }}>Preço no cardápio público</div>
                         <div
                           style={{
                             marginTop: 4,
@@ -1336,14 +1392,14 @@ export default function Page() {
                             Manual
                           </div>
                           <NumberField
-                            style={{ ...input, width: 58, padding: "4px 6px", fontSize: 11, borderRadius: 999, textAlign: "center" }}
+                            style={{ ...input, width: 58, padding: "4px 6px", fontSize: FONT_SCALE.sm, borderRadius: 999, textAlign: "center" }}
                             value={d.manualPublicPrice ?? 0}
                             decimals={2}
                             min={0}
                             onCommit={(n) => updateDrink(d.id, { manualPublicPrice: n })}
                           />
                         </div>
-                        <div style={{ ...small, marginTop: 4, fontSize: 11 }}>
+                        <div style={{ ...small, marginTop: 4, fontSize: FONT_SCALE.sm }}>
                           Preço selecionado: {formatBRL(publicPrice)}
                         </div>
                       </div>
@@ -1351,8 +1407,8 @@ export default function Page() {
                       <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
                         {prices.map((p) => (
                           <div key={p.label} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                            <div style={{ ...small, fontSize: 11 }}>{p.label}</div>
-                            <div style={{ fontSize: 14, fontWeight: 650 }}>{formatBRL(p.value)}</div>
+                            <div style={{ ...small, fontSize: FONT_SCALE.sm }}>{p.label}</div>
+                            <div style={{ fontSize: FONT_SCALE.md, fontWeight: 650 }}>{formatBRL(p.value)}</div>
                           </div>
                         ))}
                       </div>
@@ -1379,13 +1435,13 @@ export default function Page() {
                           height: "100%",
                         }}
                       >
-                        <div style={{ fontSize: 18, fontWeight: 800, lineHeight: 1.1, display: "inline-block", maxWidth: "100%", width: `${nameWidthCh}ch` }}>
+                        <div style={{ fontSize: FONT_SCALE.lg, fontWeight: 800, lineHeight: 1.1, display: "inline-block", maxWidth: "100%", width: `${nameWidthCh}ch` }}>
                           {d.name}
                         </div>
                         <div
                           style={{
                             ...small,
-                            fontSize: 11,
+                            fontSize: FONT_SCALE.sm,
                             marginTop: 4,
                             color: "#7a8793",
                             display: "inline-block",
@@ -1395,7 +1451,7 @@ export default function Page() {
                         >
                           {ingredientNames.length ? ingredientNames.join(" • ") : "Sem ingredientes"}
                         </div>
-                        {d.notes ? <div style={{ ...small, fontSize: 11 }}>{d.notes}</div> : null}
+                        {d.notes ? <div style={{ ...small, fontSize: FONT_SCALE.sm }}>{d.notes}</div> : null}
                       </div>
 
                       <div
@@ -1408,7 +1464,7 @@ export default function Page() {
                           height: "100%",
                         }}
                       >
-                        <div style={{ ...small, fontSize: 11 }}>Preço no cardápio público</div>
+                        <div style={{ ...small, fontSize: FONT_SCALE.sm }}>Preço no cardápio público</div>
                         <div
                           style={{
                             marginTop: 4,
@@ -1430,14 +1486,14 @@ export default function Page() {
                             Manual
                           </div>
                           <NumberField
-                            style={{ ...input, width: 58, padding: "4px 6px", fontSize: 11, borderRadius: 999, textAlign: "center" }}
+                            style={{ ...input, width: 58, padding: "4px 6px", fontSize: FONT_SCALE.sm, borderRadius: 999, textAlign: "center" }}
                             value={d.manualPublicPrice ?? 0}
                             decimals={2}
                             min={0}
                             onCommit={(n) => updateDrink(d.id, { manualPublicPrice: n })}
                           />
                         </div>
-                        <label style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "center", marginTop: 6, fontSize: 12 }}>
+                        <label style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "center", marginTop: 6, fontSize: FONT_SCALE.sm }}>
                           <input
                             type="checkbox"
                             checked={Boolean(d.showOnPublicMenu)}
@@ -1450,8 +1506,8 @@ export default function Page() {
                       <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
                         {prices.map((p) => (
                           <div key={p.label} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                            <div style={{ ...small, fontSize: 11 }}>{p.label}</div>
-                            <div style={{ fontSize: 13, fontWeight: 650 }}>{formatBRL(p.value)}</div>
+                            <div style={{ ...small, fontSize: FONT_SCALE.sm }}>{p.label}</div>
+                            <div style={{ fontSize: FONT_SCALE.md, fontWeight: 650 }}>{formatBRL(p.value)}</div>
                           </div>
                         ))}
                         <div
@@ -1462,8 +1518,8 @@ export default function Page() {
                             background: "var(--panel2)",
                           }}
                         >
-                          <div style={{ ...small, fontSize: 10 }}>Selecionado</div>
-                          <div style={{ fontSize: 16, fontWeight: 700 }}>{formatBRL(publicPrice)}</div>
+                          <div style={{ ...small, fontSize: FONT_SCALE.sm }}>Selecionado</div>
+                          <div style={{ fontSize: FONT_SCALE.md, fontWeight: 700 }}>{formatBRL(publicPrice)}</div>
                         </div>
                       </div>
                     </div>
@@ -1484,7 +1540,7 @@ export default function Page() {
         {tab === "orders" && (
           <div style={card}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-              <h2 style={{ marginTop: 0, fontSize: 16, marginBottom: 10 }}>Pedidos</h2>
+              <h2 style={{ marginTop: 0, fontSize: FONT_SCALE.lg, marginBottom: 10 }}>Pedidos</h2>
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <div style={small}>
                   {orders.length} pedido(s)
@@ -1503,70 +1559,122 @@ export default function Page() {
                 ["em_progresso", "Em progresso"],
                 ["concluido", "Concluídos"],
               ] as Array<[OrderStatus, string]>).map(([statusKey, title]) => (
-                <div key={statusKey} style={{ border: "1px solid var(--border)", borderRadius: 14, background: "white", padding: 10 }}>
+                <div
+                  key={statusKey}
+                  ref={statusKey === "pendente" ? pendingBucketRef : statusKey === "em_progresso" ? inProgressBucketRef : undefined}
+                  style={{
+                    border: "1px solid var(--border)",
+                    borderRadius: 14,
+                    background: "white",
+                    padding: 10,
+                    display: "flex",
+                    flexDirection: "column",
+                    maxHeight: statusKey === "concluido" && completedBucketMaxHeight ? completedBucketMaxHeight : undefined,
+                  }}
+                >
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                    <strong style={{ fontSize: 13 }}>{title}</strong>
+                    <strong style={{ fontSize: FONT_SCALE.md }}>{title}</strong>
                     <div style={small}>{groupedOrders[statusKey].length}</div>
                   </div>
 
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {groupedOrders[statusKey].map((order) => (
-                      <div key={order.id} style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 9, background: "var(--panel2)" }}>
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 8,
+                      overflowY: statusKey === "concluido" && completedBucketMaxHeight ? "auto" : "visible",
+                      paddingRight: statusKey === "concluido" ? 4 : 0,
+                      scrollbarWidth: "thin",
+                    }}
+                  >
+                    {groupedOrders[statusKey].map((order) => {
+                      const isCompletedCard = statusKey === "concluido";
+                      const isExpanded = !isCompletedCard || Boolean(expandedCompletedOrders[order.id]);
+                      const statusCardBackground =
+                        statusKey === "pendente" ? "#fff1f1" : statusKey === "em_progresso" ? "#fff8df" : "#ecfdf3";
+                      const statusCardBorder =
+                        statusKey === "pendente" ? "#f2cccc" : statusKey === "em_progresso" ? "#eed9a7" : "#bfe8cf";
+                      const statusButtonStyle: React.CSSProperties =
+                        statusKey === "pendente"
+                          ? { background: "#fde2e2", borderColor: "#e9b9b9" }
+                          : statusKey === "em_progresso"
+                          ? { background: "#fdf0c4", borderColor: "#e8d08d" }
+                          : { background: "#dcfce7", borderColor: "#a7d9bc" };
+
+                      return (
+                      <div
+                        key={order.id}
+                        onClick={isCompletedCard ? () => toggleCompletedOrderCard(order.id) : undefined}
+                        style={{
+                          border: `1px solid ${statusCardBorder}`,
+                          borderRadius: 10,
+                          padding: 9,
+                          background: statusCardBackground,
+                          cursor: isCompletedCard ? "pointer" : "default",
+                        }}
+                      >
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
-                          <div style={{ fontWeight: 700, fontSize: 12 }}>{order.code}</div>
-                          <div style={{ ...small, fontSize: 11 }}>{formatOrderDate(order.createdAt)}</div>
+                          <div style={{ fontWeight: 700, fontSize: FONT_SCALE.sm }}>{order.code}</div>
+                          <div style={{ ...small, fontSize: FONT_SCALE.sm }}>
+                            {formatOrderDate(order.createdAt)}
+                            {isCompletedCard ? (isExpanded ? " • recolher" : " • expandir") : ""}
+                          </div>
                         </div>
 
                         <div style={{ ...small, marginTop: 4 }}>
                           {(order.customerName || "Cliente não informado") + (order.customerPhone ? ` • ${order.customerPhone}` : "")}
                         </div>
 
-                        <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
-                          {order.items.map((item, idx) => (
-                            <div key={`${order.id}_${idx}`} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12 }}>
-                              <div style={{ display: "grid", gap: 2 }}>
-                                <div>
-                                  {item.qty}x {item.drinkName}
+                        {isExpanded ? (
+                          <>
+                            <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+                              {order.items.map((item, idx) => (
+                                <div key={`${order.id}_${idx}`} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: FONT_SCALE.sm }}>
+                                  <div style={{ display: "grid", gap: 2 }}>
+                                    <div>
+                                      {item.qty}x {item.drinkName}
+                                    </div>
+                                    {item.notes ? <div style={{ ...small, fontSize: FONT_SCALE.sm }}>Item: {item.notes}</div> : null}
+                                  </div>
+                                  <div>{formatBRL(item.lineTotal)}</div>
                                 </div>
-                                {item.notes ? <div style={{ ...small, fontSize: 11 }}>Item: {item.notes}</div> : null}
-                              </div>
-                              <div>{formatBRL(item.lineTotal)}</div>
+                              ))}
                             </div>
-                          ))}
-                        </div>
 
-                        {order.notes ? <div style={{ ...small, marginTop: 6 }}>Obs: {order.notes}</div> : null}
+                            {order.notes ? <div style={{ ...small, marginTop: 6 }}>Obs: {order.notes}</div> : null}
 
-                        <div style={{ marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                          <strong style={{ fontSize: 13 }}>Total: {formatBRL(order.subtotal)}</strong>
-                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                            {statusKey === "pendente" && (
-                              <button style={btn} disabled={updatingOrderId === order.id} onClick={() => void moveOrderTo(order.id, "em_progresso")}>
-                                Em progresso
-                              </button>
-                            )}
-                            {statusKey === "em_progresso" && (
-                              <>
-                                <button style={btn} disabled={updatingOrderId === order.id} onClick={() => void moveOrderTo(order.id, "pendente")}>
-                                  Voltar
-                                </button>
-                                <button style={btn} disabled={updatingOrderId === order.id} onClick={() => void moveOrderTo(order.id, "concluido")}>
-                                  Concluir
-                                </button>
-                              </>
-                            )}
-                            {statusKey === "concluido" && (
-                              <button style={btn} disabled={updatingOrderId === order.id} onClick={() => void moveOrderTo(order.id, "em_progresso")}>
-                                Reabrir
-                              </button>
-                            )}
-                          </div>
-                        </div>
+                            <div style={{ marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                              <strong style={{ fontSize: FONT_SCALE.md }}>Total: {formatBRL(order.subtotal)}</strong>
+                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                {statusKey === "pendente" && (
+                                  <button style={{ ...btn, ...statusButtonStyle }} disabled={updatingOrderId === order.id} onClick={(e) => { e.stopPropagation(); void moveOrderTo(order.id, "em_progresso"); }}>
+                                    Em progresso
+                                  </button>
+                                )}
+                                {statusKey === "em_progresso" && (
+                                  <>
+                                    <button style={{ ...btn, ...statusButtonStyle }} disabled={updatingOrderId === order.id} onClick={(e) => { e.stopPropagation(); void moveOrderTo(order.id, "pendente"); }}>
+                                      Voltar
+                                    </button>
+                                    <button style={{ ...btn, ...statusButtonStyle }} disabled={updatingOrderId === order.id} onClick={(e) => { e.stopPropagation(); void moveOrderTo(order.id, "concluido"); }}>
+                                      Concluir
+                                    </button>
+                                  </>
+                                )}
+                                {statusKey === "concluido" && (
+                                  <button style={{ ...btn, ...statusButtonStyle }} disabled={updatingOrderId === order.id} onClick={(e) => { e.stopPropagation(); void moveOrderTo(order.id, "em_progresso"); }}>
+                                    Reabrir
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          </>
+                        ) : null}
                       </div>
-                    ))}
+                    )})}
 
                     {groupedOrders[statusKey].length === 0 && (
-                      <div style={{ padding: 12, border: "1px dashed var(--border)", borderRadius: 12, color: "var(--muted)", fontSize: 12 }}>
+                      <div style={{ padding: 12, border: "1px dashed var(--border)", borderRadius: 12, color: "var(--muted)", fontSize: FONT_SCALE.sm }}>
                         Sem pedidos nesta coluna.
                       </div>
                     )}
@@ -1580,7 +1688,7 @@ export default function Page() {
         {/* -------------------- SETTINGS -------------------- */}
         {tab === "settings" && (
           <div style={card}>
-            <h2 style={{ marginTop: 0, fontSize: 16 }}>Configurações</h2>
+            <h2 style={{ marginTop: 0, fontSize: FONT_SCALE.lg }}>Configurações</h2>
 
             <div className="settings-grid" style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
               <div>
@@ -1672,7 +1780,7 @@ export default function Page() {
             <hr style={{ border: 0, borderTop: "1px solid var(--border)", margin: "14px 0" }} />
 
             <div style={{ display: "grid", gap: 8 }}>
-              <h3 style={{ margin: 0, fontSize: 14 }}>Importar e exportar CSV</h3>
+              <h3 style={{ margin: 0, fontSize: FONT_SCALE.md }}>Importar e exportar CSV</h3>
               <div style={small}>Seção separada para backup e restauração dos dados.</div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button style={btn} onClick={() => exportAsCsv({ ingredients, drinks, settings })}>
@@ -1705,8 +1813,11 @@ export default function Page() {
         {tab === "drinks" && (
           <div style={card}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-              <h2 style={{ marginTop: 0, fontSize: 16, marginBottom: 10 }}>Drinks</h2>
-              <div style={small}>{drinks.length} drink(s)</div>
+              <h2 style={{ marginTop: 0, fontSize: FONT_SCALE.lg, marginBottom: 10 }}>Drinks</h2>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={small}>{drinks.length} drink(s)</div>
+                <button style={btn} onClick={addDrink}>+ Drink</button>
+              </div>
             </div>
 
             {drinks.length === 0 ? (
@@ -1746,7 +1857,7 @@ export default function Page() {
       alignItems: "center",
       justifyContent: "center",
       color: "var(--muted)",
-      fontSize: 12,
+      fontSize: FONT_SCALE.sm,
     }}
   >
     {activeDrink.photoDataUrl ? (
@@ -1817,15 +1928,15 @@ export default function Page() {
                       const blocks: React.ReactNode[] = [
                         <div key="cost" style={{ border: "1px solid var(--border)", borderRadius: 14, padding: 12, background: "white" }}>
                           <div style={small}>Custo</div>
-                          <div style={{ fontSize: 18 }}>{formatBRL(cost)}</div>
+                          <div style={{ fontSize: FONT_SCALE.lg }}>{formatBRL(cost)}</div>
                         </div>,
                         <div key="m" style={{ border: "1px solid var(--border)", borderRadius: 14, padding: 12, background: "white" }}>
                           <div style={small}>Preço (markup {settings.markup}x) • {settings.roundingMode === "none" ? "sem arred." : "arred."}</div>
-                          <div style={{ fontSize: 18 }}>{formatBRL(markupP)}</div>
+                          <div style={{ fontSize: FONT_SCALE.lg }}>{formatBRL(markupP)}</div>
                         </div>,
                         <div key="c" style={{ border: "1px solid var(--border)", borderRadius: 14, padding: 12, background: "white" }}>
                           <div style={small}>Preço (CMV {Math.round(settings.targetCmv * 100)}%) • {settings.roundingMode === "none" ? "sem arred." : "arred."}</div>
-                          <div style={{ fontSize: 18 }}>{formatBRL(cmvP)}</div>
+                          <div style={{ fontSize: FONT_SCALE.lg }}>{formatBRL(cmvP)}</div>
                         </div>,
                       ];
 
@@ -1839,7 +1950,7 @@ export default function Page() {
                     <hr style={{ border: 0, borderTop: "1px solid var(--border)", margin: "12px 0" }} />
 
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                      <strong style={{ fontSize: 14 }}>Receita</strong>
+                      <strong style={{ fontSize: FONT_SCALE.md }}>Receita</strong>
                       <div style={{ display: "flex", gap: 8 }}>
                         <button style={btn} onClick={() => addItemToDrink(activeDrink.id)} disabled={!ingredients.length}>+ Item</button>
                         <button style={btn} onClick={() => duplicateDrink(activeDrink.id)}>Duplicar drink</button>
@@ -1919,8 +2030,11 @@ export default function Page() {
         {tab === "ingredients" && (
           <div style={card}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-              <h2 style={{ marginTop: 0, fontSize: 16, marginBottom: 10 }}>Ingredientes</h2>
-              <div style={small}>{ingredients.length} ingrediente(s)</div>
+              <h2 style={{ marginTop: 0, fontSize: FONT_SCALE.lg, marginBottom: 10 }}>Ingredientes</h2>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={small}>{ingredients.length} ingrediente(s)</div>
+                <button style={btn} onClick={addIngredient}>+ Ingrediente</button>
+              </div>
             </div>
 
             {ingredients.length === 0 ? (
@@ -2010,7 +2124,7 @@ export default function Page() {
 
                         <div style={{ gridColumn: "1 / -1", background: "white", border: "1px solid var(--border)", borderRadius: 14, padding: 12 }}>
                           <div style={small}>R$/ml calculado</div>
-                          <div style={{ fontSize: 16 }}>{formatBRL(computeCostPerMl(activeIngredient) ?? 0)} / ml</div>
+                          <div style={{ fontSize: FONT_SCALE.md }}>{formatBRL(computeCostPerMl(activeIngredient) ?? 0)} / ml</div>
                         </div>
                       </div>
                     )}
@@ -2028,7 +2142,7 @@ export default function Page() {
                           />
                         </div>
                         <div style={{ display: "flex", alignItems: "flex-end" }}>
-                          <div style={{ fontSize: 16 }}>{formatBRL(computeCostPerMl(activeIngredient) ?? 0)} / ml</div>
+                          <div style={{ fontSize: FONT_SCALE.md }}>{formatBRL(computeCostPerMl(activeIngredient) ?? 0)} / ml</div>
                         </div>
                       </div>
                     )}

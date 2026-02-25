@@ -91,6 +91,11 @@ type CreateOrderResponse = {
   error?: string;
 };
 
+type OrderConfirmation = {
+  code: string;
+  items: Array<{ drinkName: string; qty: number }>;
+};
+
 const PUBLIC_MENU_CACHE_KEY = "public_menu_cache_v1";
 const PUBLIC_MENU_CART_KEY = "public_menu_cart_v1";
 
@@ -290,6 +295,8 @@ export default function PublicMenuPage() {
   const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
   const [checkoutError, setCheckoutError] = useState("");
   const [checkoutSuccess, setCheckoutSuccess] = useState("");
+  const [orderConfirmation, setOrderConfirmation] = useState<OrderConfirmation | null>(null);
+  const [confirmationCountdown, setConfirmationCountdown] = useState<number | null>(null);
   const [editingCartItemId, setEditingCartItemId] = useState<string | null>(null);
   const [editingDrinkNotes, setEditingDrinkNotes] = useState("");
 
@@ -308,6 +315,17 @@ export default function PublicMenuPage() {
   useEffect(() => {
     writeCart(cartItems);
   }, [cartItems]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setIsCartOpen(false);
+      setSelectedDrinkId(null);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -382,18 +400,35 @@ export default function PublicMenuPage() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!isCartOpen || !checkoutSuccess || !orderConfirmation) {
+      setConfirmationCountdown(null);
+      return;
+    }
+
+    setConfirmationCountdown(5);
+    let remaining = 5;
+    const timer = window.setInterval(() => {
+      remaining -= 1;
+      if (remaining <= 0) {
+        window.clearInterval(timer);
+        setConfirmationCountdown(0);
+        setIsCartOpen(false);
+        return;
+      }
+      setConfirmationCountdown(remaining);
+    }, 1000);
+
+    return () => window.clearInterval(timer);
+  }, [isCartOpen, checkoutSuccess, orderConfirmation]);
+
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
     const ingredientMap = new Map(ingredients.map((i) => [i.id, i]));
 
     return drinks
       .filter((d) => d.showOnPublicMenu)
-      .filter((d) => (q ? d.name.toLowerCase().includes(q) : true))
-      .sort((a, b) => a.name.localeCompare(b.name))
       .map((drink) => {
-        const cost = computeDrinkCost(drink, ingredients, settings);
-        const markup = applyPsychRounding(cost * settings.markup, settings.roundingMode);
-        const cmv = settings.targetCmv > 0 ? applyPsychRounding(cost / settings.targetCmv, settings.roundingMode) : 0;
         const ingredientNames = Array.from(
           new Set(
             drink.items
@@ -401,6 +436,9 @@ export default function PublicMenuPage() {
               .filter((name): name is string => Boolean(name))
           )
         );
+        const cost = computeDrinkCost(drink, ingredients, settings);
+        const markup = applyPsychRounding(cost * settings.markup, settings.roundingMode);
+        const cmv = settings.targetCmv > 0 ? applyPsychRounding(cost / settings.targetCmv, settings.roundingMode) : 0;
 
         const orderPrice =
           drink.publicMenuPriceMode === "manual"
@@ -417,7 +455,13 @@ export default function PublicMenuPage() {
           orderPrice,
           ingredientNames,
         };
-      });
+      })
+      .filter(({ drink, ingredientNames }) =>
+        q
+          ? drink.name.toLowerCase().includes(q) || ingredientNames.some((name) => name.toLowerCase().includes(q))
+          : true
+      )
+      .sort((a, b) => a.drink.name.localeCompare(b.drink.name));
   }, [drinks, ingredients, search, settings]);
 
   const rowByDrinkId = useMemo(() => new Map(rows.map((row) => [row.drink.id, row])), [rows]);
@@ -509,6 +553,7 @@ export default function PublicMenuPage() {
     setModalDrinkNotes("");
     setCheckoutError("");
     setCheckoutSuccess("");
+    setOrderConfirmation(null);
   };
 
   const submitOrder = async () => {
@@ -517,8 +562,14 @@ export default function PublicMenuPage() {
     setIsSubmittingOrder(true);
     setCheckoutError("");
     setCheckoutSuccess("");
+    setOrderConfirmation(null);
 
     try {
+      const summaryByDrink = new Map<string, number>();
+      for (const item of cartItems) {
+        summaryByDrink.set(item.drinkName, (summaryByDrink.get(item.drinkName) ?? 0) + item.qty);
+      }
+
       const res = await fetch("/api/orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -538,6 +589,10 @@ export default function PublicMenuPage() {
       }
 
       setCheckoutSuccess(`Pedido ${payload.order.code} criado com sucesso.`);
+      setOrderConfirmation({
+        code: payload.order.code,
+        items: Array.from(summaryByDrink.entries()).map(([drinkName, qty]) => ({ drinkName, qty })),
+      });
       setCartItems([]);
       setCustomerName("");
       setCustomerPhone("");
@@ -552,102 +607,113 @@ export default function PublicMenuPage() {
   };
 
   const themeVars: React.CSSProperties = {
-    ["--bg" as never]: "#f6f2ea",
-    ["--panel" as never]: "#fffdf9",
-    ["--panel2" as never]: "#fff4e7",
-    ["--ink" as never]: "#1d232a",
-    ["--muted" as never]: "#5a6672",
-    ["--border" as never]: "#dccdb8",
-    ["--shadow" as never]: "0 12px 30px rgba(32, 37, 42, 0.08)",
-    ["--accent" as never]: "#0f766e",
+    ["--brand-terracotta" as never]: "#A4362C",
+    ["--brand-teal" as never]: "#006479",
+    ["--brand-cream" as never]: "#F7F4E3",
+    ["--bg" as never]: "#8E3E36",
+    ["--panel" as never]: "#FFFCEF",
+    ["--panel2" as never]: "#F5E2DE",
+    ["--panel-elevated" as never]: "#FFFEF7",
+    ["--ink" as never]: "#3E2A27",
+    ["--muted" as never]: "#7A605C",
+    ["--border" as never]: "#DDC5BF",
+    ["--shadow" as never]: "0 12px 28px rgba(72, 22, 16, 0.2)",
+    ["--accent" as never]: "#A4362C",
+    ["--accent-strong" as never]: "#8A2D24",
+    ["--neutral-soft" as never]: "#F0E1DD",
+    ["--danger-bg" as never]: "#FBE8E5",
+    ["--danger-border" as never]: "#E5B8B0",
+    ["--danger-ink" as never]: "#7D2E25",
+    ["--success-bg" as never]: "#F8E9E6",
+    ["--success-border" as never]: "#E3C4BE",
+    ["--success-ink" as never]: "#7A2E26",
+    ["--overlay" as never]: "rgba(103, 32, 25, 0.3)",
+    ["--modal-shadow" as never]: "0 24px 56px rgba(72, 22, 16, 0.28)",
   };
 
   const page: React.CSSProperties = {
     ...themeVars,
-    background: "transparent",
+    background: "var(--bg)",
     minHeight: "100vh",
     color: "var(--ink)",
     padding: 24,
+    paddingBottom: 104,
     fontFamily: 'var(--font-app-sans), "Trebuchet MS", "Segoe UI", sans-serif',
   };
 
   const container: React.CSSProperties = { maxWidth: 1160, margin: "0 auto" };
-
-  const card: React.CSSProperties = {
-    background: "var(--panel)",
-    border: "1px solid var(--border)",
-    borderRadius: 18,
-    padding: 16,
-    boxShadow: "var(--shadow)",
-  };
 
   const input: React.CSSProperties = {
     width: "100%",
     padding: 12,
     borderRadius: 12,
     border: "1px solid var(--border)",
-    background: "white",
+    background: "var(--panel-elevated)",
     outline: "none",
   };
 
-  const small: React.CSSProperties = { fontSize: 12, color: "var(--muted)" };
+  const fontScale = {
+    sm: 12,
+    md: 14,
+    lg: 20,
+  } as const;
+
+  const menuSectionWidth = "min(100%, 916px)";
+  const searchWidth = "min(100%, 452px)";
+  const small: React.CSSProperties = { fontSize: fontScale.sm, color: "var(--muted)" };
 
   return (
     <div style={page}>
+      <style>{`.public-search::placeholder { color: rgba(247, 244, 227, 0.78); }`}</style>
       <div style={container}>
-        <div style={{ ...card, marginBottom: 14, background: "linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%)" }}>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
-            <div style={{ textAlign: "center" }}>
-              <h1 style={{ margin: 0, fontSize: 26, letterSpacing: -0.5 }}>Cardápio de Drinks</h1>
-              <div style={{ ...small, color: "#7a8793" }}>
-                Seção pública com drinks selecionados
-                {hydrating
-                  ? " • carregando..."
-                  : dataSource === "supabase"
-                  ? " • dados do Supabase"
-                  : dataSource === "local"
-                  ? " • dados locais (cache)"
-                  : " • erro ao carregar"}
-              </div>
-            </div>
-
-            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "center" }}>
-              <button
-                onClick={() => setIsCartOpen(true)}
-                style={{
-                  textDecoration: "none",
-                  padding: "8px 12px",
-                  borderRadius: 10,
-                  border: "1px solid var(--border)",
-                  background: "white",
-                  color: "#1d232a",
-                  fontWeight: 700,
-                  fontSize: 12,
-                  cursor: "pointer",
-                }}
-              >
-                Pedido ({cartCount})
-              </button>
-
-              <Link href="/admin" style={{ textDecoration: "none", padding: "8px 12px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--panel2)", color: "#7a8793", fontWeight: 600, fontSize: 12 }}>
-                Ir para área interna
-              </Link>
-            </div>
-          </div>
+        <div style={{ display: "grid", justifyItems: "center", marginBottom: 14 }}>
+          <img
+            src="/manteca-logo.svg"
+            alt="Manteca"
+            title={
+              hydrating
+                ? "Carregando cardápio..."
+                : dataSource === "supabase"
+                ? "Dados do Supabase"
+                : dataSource === "local"
+                ? "Dados locais (cache)"
+                : "Erro ao carregar"
+            }
+            style={{ width: "min(360px, 92vw)", height: "auto", display: "block" }}
+          />
         </div>
 
-        <div style={card}>
+        <div style={{ display: "grid", justifyItems: "center" }}>
           {loadError ? (
-            <div style={{ marginBottom: 12, padding: 10, borderRadius: 12, border: "1px solid #f0c2c2", background: "#fff1f1", color: "#7b1f1f", fontSize: 12 }}>
+            <div style={{ width: menuSectionWidth, marginBottom: 12, padding: 10, borderRadius: 12, border: "1px solid var(--danger-border)", background: "var(--danger-bg)", color: "var(--danger-ink)", fontSize: fontScale.sm }}>
               {loadError}
             </div>
           ) : null}
 
-          <input style={input} placeholder="Buscar drink..." value={search} onChange={(e) => setSearch(e.target.value)} />
+          <input
+            className="public-search"
+            style={{
+              ...input,
+              width: searchWidth,
+              fontSize: fontScale.sm,
+              padding: "8px 2px",
+              border: 0,
+              borderBottom: "1px solid rgba(247, 244, 227, 0.95)",
+              borderRadius: 0,
+              background: "transparent",
+              color: "var(--brand-cream)",
+              boxShadow: "none",
+              caretColor: "var(--brand-cream)",
+            }}
+            placeholder="Buscar drink ou ingrediente"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
 
           <div
             style={{
               marginTop: 12,
+              width: menuSectionWidth,
               display: "grid",
               gridTemplateColumns: "repeat(auto-fill, minmax(220px, 220px))",
               justifyContent: "center",
@@ -661,11 +727,11 @@ export default function PublicMenuPage() {
                 style={{
                   border: "1px solid var(--border)",
                   borderRadius: 16,
-                  background: "white",
+                  background: "var(--panel-elevated)",
                   overflow: "hidden",
                   aspectRatio: "4 / 5",
                   display: "grid",
-                  gridTemplateRows: "4fr 1fr",
+                  gridTemplateRows: "7fr 3fr",
                   cursor: "pointer",
                   padding: 0,
                   textAlign: "left",
@@ -680,7 +746,7 @@ export default function PublicMenuPage() {
                     alignItems: "center",
                     justifyContent: "center",
                     color: "var(--muted)",
-                    fontSize: 12,
+                    fontSize: fontScale.sm,
                   }}
                 >
                   {drink.photoDataUrl ? (
@@ -691,14 +757,14 @@ export default function PublicMenuPage() {
                 </div>
 
                 <div style={{ padding: 10, display: "flex", flexDirection: "column", justifyContent: "center", textAlign: "center", minHeight: 0 }}>
-                  <div style={{ fontSize: 15, fontWeight: 700, lineHeight: 1.1 }}>{drink.name}</div>
+                  <div style={{ fontSize: fontScale.md, fontWeight: 700, lineHeight: 1.1 }}>{drink.name}</div>
                   <div
                     style={{
                       ...small,
                       marginTop: 4,
-                      fontSize: 11,
+                      fontSize: fontScale.sm,
                       lineHeight: 1.25,
-                      color: "#7a8793",
+                      color: "var(--muted)",
                       display: "-webkit-box",
                       WebkitLineClamp: 2,
                       WebkitBoxOrient: "vertical",
@@ -710,7 +776,7 @@ export default function PublicMenuPage() {
 
                   {displayPrice !== null && (
                     <div style={{ marginTop: 5 }}>
-                      <div style={{ fontSize: 13, fontWeight: 650 }}>{formatBRL(displayPrice)}</div>
+                      <div style={{ fontSize: fontScale.md, fontWeight: 650 }}>{formatBRL(displayPrice)}</div>
                     </div>
                   )}
                 </div>
@@ -724,6 +790,24 @@ export default function PublicMenuPage() {
             )}
           </div>
         </div>
+
+        <div style={{ display: "flex", justifyContent: "center", marginTop: 14 }}>
+          <Link
+            href="/admin"
+            style={{
+              textDecoration: "none",
+              padding: "6px 10px",
+              borderRadius: 999,
+              border: "1px solid var(--border)",
+              background: "var(--panel)",
+              color: "var(--muted)",
+              fontWeight: 500,
+              fontSize: fontScale.sm,
+            }}
+          >
+            Área interna
+          </Link>
+        </div>
       </div>
 
       {selectedRow && (
@@ -732,7 +816,7 @@ export default function PublicMenuPage() {
           style={{
             position: "fixed",
             inset: 0,
-            background: "rgba(20, 24, 31, 0.5)",
+            background: "var(--overlay)",
             zIndex: 50,
             display: "flex",
             alignItems: "center",
@@ -744,11 +828,11 @@ export default function PublicMenuPage() {
             onClick={(e) => e.stopPropagation()}
             style={{
               width: "min(860px, 100%)",
-              background: "white",
+              background: "var(--panel-elevated)",
               borderRadius: 18,
               border: "1px solid var(--border)",
               overflow: "hidden",
-              boxShadow: "0 24px 56px rgba(16, 20, 28, 0.22)",
+              boxShadow: "var(--modal-shadow)",
             }}
           >
             <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 0 }}>
@@ -773,7 +857,7 @@ export default function PublicMenuPage() {
                     onClick={() => setSelectedDrinkId(null)}
                     style={{
                       border: "1px solid var(--border)",
-                      background: "white",
+                      background: "var(--panel-elevated)",
                       borderRadius: 10,
                       padding: "6px 10px",
                       cursor: "pointer",
@@ -790,30 +874,61 @@ export default function PublicMenuPage() {
                 </div>
 
                 {selectedRow.drink.notes ? (
-                  <div style={{ marginTop: 10, fontSize: 13, color: "#475465" }}>{selectedRow.drink.notes}</div>
+                  <div style={{ marginTop: 10, fontSize: fontScale.md, color: "var(--muted)" }}>{selectedRow.drink.notes}</div>
                 ) : null}
 
                 {selectedRow.displayPrice !== null ? (
-                  <div style={{ marginTop: 12, fontWeight: 800, fontSize: 20 }}>{formatBRL(selectedRow.displayPrice)}</div>
+                  <div style={{ marginTop: 12, fontWeight: 800, fontSize: fontScale.lg }}>{formatBRL(selectedRow.displayPrice)}</div>
                 ) : (
-                  <div style={{ marginTop: 12, fontWeight: 700, fontSize: 14, color: "#4e5a66" }}>
+                  <div style={{ marginTop: 12, fontWeight: 700, fontSize: fontScale.md, color: "var(--muted)" }}>
                     Preço exibido no checkout
                   </div>
                 )}
 
                 <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <label style={{ ...small, fontWeight: 700 }}>Quantidade</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={30}
-                    value={modalQty}
-                    onChange={(e) => setModalQty(Math.max(1, Math.min(30, Number(e.target.value) || 1)))}
-                    style={{ width: 78, ...input }}
-                  />
+                  <div style={{ display: "flex", alignItems: "center", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", background: "var(--panel-elevated)" }}>
+                    <button
+                      onClick={() => setModalQty((prev) => Math.max(1, prev - 1))}
+                      disabled={modalQty <= 1}
+                      style={{
+                        border: 0,
+                        borderRight: "1px solid var(--border)",
+                        background: modalQty <= 1 ? "var(--neutral-soft)" : "var(--panel-elevated)",
+                        color: "var(--ink)",
+                        width: 34,
+                        height: 34,
+                        fontWeight: 800,
+                        fontSize: fontScale.lg,
+                        cursor: modalQty <= 1 ? "not-allowed" : "pointer",
+                      }}
+                      aria-label="Diminuir quantidade"
+                    >
+                      -
+                    </button>
+                    <div style={{ minWidth: 34, textAlign: "center", fontWeight: 700, fontSize: fontScale.md }}>{modalQty}</div>
+                    <button
+                      onClick={() => setModalQty((prev) => Math.min(30, prev + 1))}
+                      disabled={modalQty >= 30}
+                      style={{
+                        border: 0,
+                        borderLeft: "1px solid var(--border)",
+                        background: modalQty >= 30 ? "var(--neutral-soft)" : "var(--panel-elevated)",
+                        color: "var(--ink)",
+                        width: 34,
+                        height: 34,
+                        fontWeight: 800,
+                        fontSize: fontScale.lg,
+                        cursor: modalQty >= 30 ? "not-allowed" : "pointer",
+                      }}
+                      aria-label="Aumentar quantidade"
+                    >
+                      +
+                    </button>
+                  </div>
                 </div>
                 <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-                  <label style={{ ...small, fontWeight: 700 }}>Notas para este drink (opcional)</label>
+                  <label style={{ ...small, fontWeight: 700 }}>Observações (opcional)</label>
                   <textarea
                     style={{ ...input, resize: "vertical", minHeight: 78 }}
                     placeholder="Ex.: pouco gelo, sem canudo..."
@@ -827,7 +942,6 @@ export default function PublicMenuPage() {
                     onClick={() => {
                       addToCart(selectedRow.drink.id, modalQty, modalDrinkNotes);
                       setSelectedDrinkId(null);
-                      setIsCartOpen(true);
                     }}
                     style={{
                       border: "1px solid var(--border)",
@@ -848,13 +962,37 @@ export default function PublicMenuPage() {
         </div>
       )}
 
+      {cartCount > 0 && (
+        <button
+          onClick={() => setIsCartOpen(true)}
+          style={{
+            position: "fixed",
+            bottom: 20,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 40,
+            border: "1px solid var(--accent-strong)",
+            borderRadius: 999,
+            background: "var(--accent)",
+            color: "white",
+            padding: "12px 20px",
+            fontWeight: 800,
+            fontSize: fontScale.md,
+            boxShadow: "0 14px 28px rgba(103, 32, 25, 0.3)",
+            cursor: "pointer",
+          }}
+        >
+          Ver resumo do pedido ({cartCount})
+        </button>
+      )}
+
       {isCartOpen && (
         <div
           onClick={() => setIsCartOpen(false)}
           style={{
             position: "fixed",
             inset: 0,
-            background: "rgba(20, 24, 31, 0.5)",
+            background: "var(--overlay)",
             zIndex: 60,
             display: "flex",
             alignItems: "center",
@@ -868,152 +1006,204 @@ export default function PublicMenuPage() {
               width: "min(920px, 100%)",
               maxHeight: "90vh",
               overflow: "auto",
-              background: "white",
+              background: "var(--panel-elevated)",
               borderRadius: 18,
               border: "1px solid var(--border)",
-              boxShadow: "0 24px 56px rgba(16, 20, 28, 0.22)",
+              boxShadow: "var(--modal-shadow)",
               padding: 16,
             }}
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
               <h2 style={{ margin: 0 }}>Seu pedido ({cartCount})</h2>
-              <button
-                onClick={() => setIsCartOpen(false)}
-                style={{ border: "1px solid var(--border)", borderRadius: 10, background: "white", padding: "6px 10px", cursor: "pointer" }}
-              >
-                Fechar
-              </button>
+              {checkoutSuccess && orderConfirmation ? (
+                <div style={{ ...small, fontWeight: 700 }}>
+                  Fechando em {confirmationCountdown ?? 5}s
+                </div>
+              ) : (
+                <button
+                  onClick={() => setIsCartOpen(false)}
+                  style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--panel-elevated)", padding: "6px 10px", cursor: "pointer" }}
+                >
+                  Fechar
+                </button>
+              )}
             </div>
 
-            {checkoutSuccess ? (
-              <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: "#ecfdf5", border: "1px solid #a7f3d0", color: "#065f46", fontSize: 13 }}>
-                {checkoutSuccess}
-              </div>
-            ) : null}
-
             {checkoutError ? (
-              <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: "#fff1f1", border: "1px solid #f0c2c2", color: "#7b1f1f", fontSize: 13 }}>
+              <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: "var(--danger-bg)", border: "1px solid var(--danger-border)", color: "var(--danger-ink)", fontSize: fontScale.md }}>
                 {checkoutError}
               </div>
             ) : null}
 
-            {!cartItems.length ? (
-              <div style={{ marginTop: 14, padding: 14, border: "1px dashed var(--border)", borderRadius: 12, color: "var(--muted)", background: "var(--panel2)" }}>
-                Seu pedido está vazio.
+            {checkoutSuccess && orderConfirmation ? (
+              <div style={{ marginTop: 14, display: "grid", gap: 12 }}>
+                <div style={{ padding: 12, borderRadius: 12, background: "var(--success-bg)", border: "1px solid var(--success-border)", color: "var(--success-ink)", fontSize: fontScale.md, fontWeight: 700 }}>
+                  Pedido {orderConfirmation.code} criado com sucesso.
+                </div>
+                <div style={{ border: "1px solid var(--border)", borderRadius: 12, padding: 12, background: "var(--panel2)" }}>
+                  <div style={{ fontWeight: 700, marginBottom: 8 }}>Resumo do pedido</div>
+                  <div style={{ display: "grid", gap: 6 }}>
+                    {orderConfirmation.items.map((item) => (
+                      <div key={`${orderConfirmation.code}_${item.drinkName}`} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: fontScale.md }}>
+                        <span>{item.drinkName}</span>
+                        <strong>{item.qty}x</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             ) : (
-              <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
-                {cartItems.map((item) => (
-                  <div key={item.id} style={{ border: "1px solid var(--border)", borderRadius: 12, padding: 10, display: "grid", gap: 8 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-                      <div>
-                        <div style={{ fontWeight: 700 }}>{item.drinkName}</div>
-                        <div style={{ ...small }}>{formatBRL(item.unitPrice)} por unidade</div>
-                        {editingCartItemId === item.id ? (
-                          <div style={{ marginTop: 6, display: "grid", gap: 6 }}>
-                            <textarea
-                              style={{ ...input, ...small, minHeight: 68, padding: 8 }}
-                              placeholder="Adicionar nota para este drink"
-                              value={editingDrinkNotes}
-                              onChange={(e) => setEditingDrinkNotes(e.target.value)}
-                              maxLength={240}
-                            />
-                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <>
+                {!cartItems.length ? (
+                  <div style={{ marginTop: 14, padding: 14, border: "1px dashed var(--border)", borderRadius: 12, color: "var(--muted)", background: "var(--panel2)" }}>
+                    Seu pedido está vazio.
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
+                    {cartItems.map((item) => (
+                      <div key={item.id} style={{ border: "1px solid var(--border)", borderRadius: 12, padding: 10, display: "grid", gap: 8 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                          <div>
+                            <div style={{ fontWeight: 700 }}>{item.drinkName}</div>
+                            <div style={{ ...small }}>{formatBRL(item.unitPrice)} por unidade</div>
+                            {editingCartItemId === item.id ? (
+                              <div style={{ marginTop: 6, display: "grid", gap: 6 }}>
+                                <textarea
+                                  style={{ ...input, ...small, minHeight: 68, padding: 8 }}
+                                  placeholder="Observações (opcional)"
+                                  value={editingDrinkNotes}
+                                  onChange={(e) => setEditingDrinkNotes(e.target.value)}
+                                  maxLength={240}
+                                />
+                                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                                  <button
+                                    onClick={() => saveCartItemNotes(item.id)}
+                                    style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--accent)", color: "white", padding: "5px 8px", cursor: "pointer", fontSize: fontScale.sm, fontWeight: 700 }}
+                                  >
+                                    Salvar
+                                  </button>
+                                  <button
+                                    onClick={cancelEditCartItemNotes}
+                                    style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--panel-elevated)", color: "var(--ink)", padding: "5px 8px", cursor: "pointer", fontSize: fontScale.sm, fontWeight: 700 }}
+                                  >
+                                    Cancelar
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                                <div style={small}>Observações: {item.drinkNotes ? item.drinkNotes : "sem observações"}</div>
+                                <button
+                                  onClick={() => startEditCartItemNotes(item)}
+                                  style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--panel-elevated)", color: "var(--muted)", padding: "2px 7px", cursor: "pointer", fontSize: fontScale.sm, fontWeight: 700 }}
+                                >
+                                  Editar
+                                </button>
+                              </div>
+                            )}
+                          </div>
+
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <div style={{ display: "flex", alignItems: "center", border: "1px solid var(--border)", borderRadius: 10, overflow: "hidden", background: "var(--panel-elevated)" }}>
                               <button
-                                onClick={() => saveCartItemNotes(item.id)}
-                                style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--accent)", color: "white", padding: "5px 8px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                                onClick={() => updateCartQty(item.id, item.qty - 1)}
+                                disabled={item.qty <= 1}
+                                style={{
+                                  border: 0,
+                                  borderRight: "1px solid var(--border)",
+                                  background: item.qty <= 1 ? "var(--neutral-soft)" : "var(--panel-elevated)",
+                                  color: "var(--ink)",
+                                  width: 34,
+                                  height: 34,
+                                  fontWeight: 800,
+                                  fontSize: fontScale.lg,
+                                  cursor: item.qty <= 1 ? "not-allowed" : "pointer",
+                                }}
+                                aria-label={`Diminuir quantidade de ${item.drinkName}`}
                               >
-                                Salvar
+                                -
                               </button>
+                              <div style={{ minWidth: 34, textAlign: "center", fontWeight: 700, fontSize: fontScale.md }}>{item.qty}</div>
                               <button
-                                onClick={cancelEditCartItemNotes}
-                                style={{ border: "1px solid var(--border)", borderRadius: 8, background: "white", color: "var(--ink)", padding: "5px 8px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                                onClick={() => updateCartQty(item.id, item.qty + 1)}
+                                disabled={item.qty >= 30}
+                                style={{
+                                  border: 0,
+                                  borderLeft: "1px solid var(--border)",
+                                  background: item.qty >= 30 ? "var(--neutral-soft)" : "var(--panel-elevated)",
+                                  color: "var(--ink)",
+                                  width: 34,
+                                  height: 34,
+                                  fontWeight: 800,
+                                  fontSize: fontScale.lg,
+                                  cursor: item.qty >= 30 ? "not-allowed" : "pointer",
+                                }}
+                                aria-label={`Aumentar quantidade de ${item.drinkName}`}
                               >
-                                Cancelar
+                                +
                               </button>
                             </div>
-                          </div>
-                        ) : (
-                          <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                            <div style={small}>Notas: {item.drinkNotes ? item.drinkNotes : "sem notas"}</div>
                             <button
-                              onClick={() => startEditCartItemNotes(item)}
-                              style={{ border: "1px solid var(--border)", borderRadius: 8, background: "white", color: "var(--muted)", padding: "2px 7px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                              onClick={() => removeCartItem(item.id)}
+                              style={{ border: "1px solid var(--danger-border)", borderRadius: 10, background: "var(--danger-bg)", color: "var(--danger-ink)", padding: "8px 10px", cursor: "pointer" }}
                             >
-                              Editar
+                              Remover
                             </button>
                           </div>
-                        )}
+                        </div>
+                        <div style={{ ...small, textAlign: "right" }}>
+                          Total item: {formatBRL(roundMoney(item.unitPrice * item.qty))}
+                        </div>
                       </div>
-
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <input
-                          type="number"
-                          min={1}
-                          max={30}
-                          value={item.qty}
-                          onChange={(e) => updateCartQty(item.id, Number(e.target.value) || 1)}
-                          style={{ ...input, width: 76 }}
-                        />
-                        <button
-                          onClick={() => removeCartItem(item.id)}
-                          style={{ border: "1px solid #f0c2c2", borderRadius: 10, background: "#fff1f1", color: "#7b1f1f", padding: "8px 10px", cursor: "pointer" }}
-                        >
-                          Remover
-                        </button>
-                      </div>
-                    </div>
-                    <div style={{ ...small, textAlign: "right" }}>
-                      Total item: {formatBRL(roundMoney(item.unitPrice * item.qty))}
-                    </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                )}
+
+                <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
+                  <div style={{ fontWeight: 800, fontSize: fontScale.lg }}>Subtotal: {formatBRL(cartSubtotal)}</div>
+
+                  <input
+                    style={input}
+                    placeholder="Nome do cliente (opcional)"
+                    value={customerName}
+                    onChange={(e) => setCustomerName(e.target.value)}
+                    maxLength={80}
+                  />
+
+                  <input
+                    style={input}
+                    placeholder="Telefone (opcional)"
+                    value={customerPhone}
+                    onChange={(e) => setCustomerPhone(e.target.value)}
+                    maxLength={30}
+                  />
+
+                  <textarea
+                    style={{ ...input, resize: "vertical", minHeight: 84 }}
+                    placeholder="Observações do pedido (opcional)"
+                    value={orderNotes}
+                    onChange={(e) => setOrderNotes(e.target.value)}
+                    maxLength={400}
+                  />
+
+                  <button
+                    onClick={submitOrder}
+                    disabled={!cartItems.length || isSubmittingOrder}
+                    style={{
+                      border: "1px solid var(--border)",
+                      borderRadius: 10,
+                      background: !cartItems.length || isSubmittingOrder ? "var(--neutral-soft)" : "var(--accent)",
+                      color: "white",
+                      padding: "12px 14px",
+                      fontWeight: 800,
+                      cursor: !cartItems.length || isSubmittingOrder ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    {isSubmittingOrder ? "Enviando pedido..." : "Concluir pedido"}
+                  </button>
+                </div>
+              </>
             )}
-
-            <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
-              <div style={{ fontWeight: 800, fontSize: 18 }}>Subtotal: {formatBRL(cartSubtotal)}</div>
-
-              <input
-                style={input}
-                placeholder="Nome do cliente (opcional)"
-                value={customerName}
-                onChange={(e) => setCustomerName(e.target.value)}
-                maxLength={80}
-              />
-
-              <input
-                style={input}
-                placeholder="Telefone (opcional)"
-                value={customerPhone}
-                onChange={(e) => setCustomerPhone(e.target.value)}
-                maxLength={30}
-              />
-
-              <textarea
-                style={{ ...input, resize: "vertical", minHeight: 84 }}
-                placeholder="Observações do pedido (opcional)"
-                value={orderNotes}
-                onChange={(e) => setOrderNotes(e.target.value)}
-                maxLength={400}
-              />
-
-              <button
-                onClick={submitOrder}
-                disabled={!cartItems.length || isSubmittingOrder}
-                style={{
-                  border: "1px solid var(--border)",
-                  borderRadius: 10,
-                  background: !cartItems.length || isSubmittingOrder ? "#ced8e3" : "var(--accent)",
-                  color: "white",
-                  padding: "12px 14px",
-                  fontWeight: 800,
-                  cursor: !cartItems.length || isSubmittingOrder ? "not-allowed" : "pointer",
-                }}
-              >
-                {isSubmittingOrder ? "Enviando pedido..." : "Concluir pedido"}
-              </button>
-            </div>
           </div>
         </div>
       )}
