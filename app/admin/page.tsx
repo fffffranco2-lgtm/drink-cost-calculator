@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import Link from "next/link";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
@@ -274,8 +274,31 @@ type AppStatePayload = {
   settings: Settings;
   activeDrinkId: string | null;
   activeIngredientId: string | null;
-  tab: "carta" | "receitas" | "drinks" | "ingredients" | "settings";
+  tab: "carta" | "receitas" | "drinks" | "ingredients" | "settings" | "orders";
   cartaViewMode: CartaViewMode;
+};
+
+type OrderStatus = "pendente" | "em_progresso" | "concluido";
+
+type AdminOrderItem = {
+  drinkName: string;
+  qty: number;
+  unitPrice: number;
+  lineTotal: number;
+  notes?: string | null;
+};
+
+type AdminOrder = {
+  id: string;
+  code: string;
+  customerName: string | null;
+  customerPhone: string | null;
+  notes: string | null;
+  status: OrderStatus;
+  subtotal: number;
+  createdAt: string;
+  updatedAt: string;
+  items: AdminOrderItem[];
 };
 
 function exportAsCsv(payload: ExportPayload) {
@@ -542,12 +565,17 @@ export default function Page() {
   const [adminUserId, setAdminUserId] = useState<string | null>(null);
   const [remoteError, setRemoteError] = useState<string>("");
 
-  const [tab, setTab] = useState<"receitas" | "drinks" | "ingredients" | "settings">("receitas");
+  const [tab, setTab] = useState<"receitas" | "drinks" | "ingredients" | "settings" | "orders">("receitas");
   const [activeDrinkId, setActiveDrinkId] = useState<string | null>(null);
   const [activeIngredientId, setActiveIngredientId] = useState<string | null>(null);
 
   const [menuSearch, setMenuSearch] = useState("");
   const [cartaViewMode, setCartaViewMode] = useState<CartaViewMode>("cards");
+  const [orders, setOrders] = useState<AdminOrder[]>([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
+  const [ordersError, setOrdersError] = useState("");
+  const [updatingOrderId, setUpdatingOrderId] = useState<string | null>(null);
+  const ordersReloadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const remoteState: AppStatePayload = useMemo(
     () => ({
@@ -674,6 +702,88 @@ export default function Page() {
 
     return () => clearTimeout(timeout);
   }, [hydratingRemote, localStateJson]);
+
+  const loadOrders = useCallback(async () => {
+    setOrdersLoading(true);
+    setOrdersError("");
+    try {
+      const res = await fetch("/api/orders", { cache: "no-store" });
+      const payload = (await res.json()) as { orders?: AdminOrder[]; error?: string };
+      if (!res.ok) {
+        setOrdersError(payload.error ?? "Falha ao carregar pedidos.");
+        return;
+      }
+      setOrders(Array.isArray(payload.orders) ? payload.orders : []);
+    } catch {
+      setOrdersError("Erro de rede ao carregar pedidos.");
+    } finally {
+      setOrdersLoading(false);
+    }
+  }, []);
+
+  const scheduleOrdersReload = useCallback(
+    (delayMs = 350) => {
+      if (tab !== "orders") return;
+      if (ordersReloadTimeoutRef.current) {
+        clearTimeout(ordersReloadTimeoutRef.current);
+      }
+      ordersReloadTimeoutRef.current = setTimeout(() => {
+        ordersReloadTimeoutRef.current = null;
+        void loadOrders();
+      }, delayMs);
+    },
+    [loadOrders, tab]
+  );
+
+  useEffect(() => {
+    if (tab !== "orders") return;
+    void loadOrders();
+  }, [tab, loadOrders]);
+
+  useEffect(() => {
+    if (tab !== "orders" || !supabase) return;
+
+    const channel = supabase
+      .channel(`orders-realtime-${Date.now().toString(36)}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "orders" }, () => scheduleOrdersReload())
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "orders" }, () => scheduleOrdersReload())
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "order_items" }, () => scheduleOrdersReload())
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "order_items" }, () => scheduleOrdersReload())
+      .subscribe();
+
+    return () => {
+      if (ordersReloadTimeoutRef.current) {
+        clearTimeout(ordersReloadTimeoutRef.current);
+        ordersReloadTimeoutRef.current = null;
+      }
+      void supabase.removeChannel(channel);
+    };
+  }, [tab, supabase, scheduleOrdersReload]);
+
+  const moveOrderTo = useCallback(
+    async (orderId: string, status: OrderStatus) => {
+      setUpdatingOrderId(orderId);
+      setOrdersError("");
+      try {
+        const res = await fetch(`/api/orders/${orderId}/status`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ status }),
+        });
+        const payload = (await res.json()) as { error?: string };
+        if (!res.ok) {
+          setOrdersError(payload.error ?? "Falha ao atualizar pedido.");
+          return;
+        }
+        await loadOrders();
+      } catch {
+        setOrdersError("Erro de rede ao atualizar pedido.");
+      } finally {
+        setUpdatingOrderId(null);
+      }
+    },
+    [loadOrders]
+  );
 
   // seed: 3 drinks
   useEffect(() => {
@@ -1072,6 +1182,23 @@ export default function Page() {
       });
   }, [drinks, menuSearch, computedByDrinkId, ingredientMap, settings.roundingMode, settings.markup, settings.targetCmv]);
 
+  const groupedOrders = useMemo(
+    () => ({
+      pendente: orders.filter((order) => order.status === "pendente"),
+      em_progresso: orders.filter((order) => order.status === "em_progresso"),
+      concluido: orders.filter((order) => order.status === "concluido"),
+    }),
+    [orders]
+  );
+
+  const formatOrderDate = (iso: string) =>
+    new Date(iso).toLocaleString("pt-BR", {
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+
   return (
     <div style={page}>
       <style>{focusStyle}</style>
@@ -1100,6 +1227,7 @@ export default function Page() {
 
           <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
             <button style={topTab(tab === "receitas")} onClick={() => setTab("receitas")}>Receitas</button>
+            <button style={topTab(tab === "orders")} onClick={() => setTab("orders")}>Pedidos</button>
             <button style={topTab(tab === "drinks")} onClick={() => setTab("drinks")}>Drinks</button>
             <button style={topTab(tab === "ingredients")} onClick={() => setTab("ingredients")}>Ingredientes</button>
             <button style={topTab(tab === "settings")} onClick={() => setTab("settings")}>Configurações</button>
@@ -1348,6 +1476,103 @@ export default function Page() {
                   Nenhum drink encontrado.
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {/* -------------------- ORDERS -------------------- */}
+        {tab === "orders" && (
+          <div style={card}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
+              <h2 style={{ marginTop: 0, fontSize: 16, marginBottom: 10 }}>Pedidos</h2>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <div style={small}>
+                  {orders.length} pedido(s)
+                </div>
+                <button style={btn} onClick={() => void loadOrders()} disabled={ordersLoading || Boolean(updatingOrderId)}>
+                  {ordersLoading ? "Atualizando..." : "Atualizar"}
+                </button>
+              </div>
+            </div>
+
+            {ordersError ? <div style={{ ...small, color: "#b00020", marginBottom: 10 }}>{ordersError}</div> : null}
+
+            <div className="orders-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
+              {([
+                ["pendente", "Pendentes"],
+                ["em_progresso", "Em progresso"],
+                ["concluido", "Concluídos"],
+              ] as Array<[OrderStatus, string]>).map(([statusKey, title]) => (
+                <div key={statusKey} style={{ border: "1px solid var(--border)", borderRadius: 14, background: "white", padding: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <strong style={{ fontSize: 13 }}>{title}</strong>
+                    <div style={small}>{groupedOrders[statusKey].length}</div>
+                  </div>
+
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {groupedOrders[statusKey].map((order) => (
+                      <div key={order.id} style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 9, background: "var(--panel2)" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
+                          <div style={{ fontWeight: 700, fontSize: 12 }}>{order.code}</div>
+                          <div style={{ ...small, fontSize: 11 }}>{formatOrderDate(order.createdAt)}</div>
+                        </div>
+
+                        <div style={{ ...small, marginTop: 4 }}>
+                          {(order.customerName || "Cliente não informado") + (order.customerPhone ? ` • ${order.customerPhone}` : "")}
+                        </div>
+
+                        <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+                          {order.items.map((item, idx) => (
+                            <div key={`${order.id}_${idx}`} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12 }}>
+                              <div style={{ display: "grid", gap: 2 }}>
+                                <div>
+                                  {item.qty}x {item.drinkName}
+                                </div>
+                                {item.notes ? <div style={{ ...small, fontSize: 11 }}>Item: {item.notes}</div> : null}
+                              </div>
+                              <div>{formatBRL(item.lineTotal)}</div>
+                            </div>
+                          ))}
+                        </div>
+
+                        {order.notes ? <div style={{ ...small, marginTop: 6 }}>Obs: {order.notes}</div> : null}
+
+                        <div style={{ marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                          <strong style={{ fontSize: 13 }}>Total: {formatBRL(order.subtotal)}</strong>
+                          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            {statusKey === "pendente" && (
+                              <button style={btn} disabled={updatingOrderId === order.id} onClick={() => void moveOrderTo(order.id, "em_progresso")}>
+                                Em progresso
+                              </button>
+                            )}
+                            {statusKey === "em_progresso" && (
+                              <>
+                                <button style={btn} disabled={updatingOrderId === order.id} onClick={() => void moveOrderTo(order.id, "pendente")}>
+                                  Voltar
+                                </button>
+                                <button style={btn} disabled={updatingOrderId === order.id} onClick={() => void moveOrderTo(order.id, "concluido")}>
+                                  Concluir
+                                </button>
+                              </>
+                            )}
+                            {statusKey === "concluido" && (
+                              <button style={btn} disabled={updatingOrderId === order.id} onClick={() => void moveOrderTo(order.id, "em_progresso")}>
+                                Reabrir
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+
+                    {groupedOrders[statusKey].length === 0 && (
+                      <div style={{ padding: 12, border: "1px dashed var(--border)", borderRadius: 12, color: "var(--muted)", fontSize: 12 }}>
+                        Sem pedidos nesta coluna.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         )}

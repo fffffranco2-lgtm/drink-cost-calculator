@@ -61,6 +61,45 @@ type AppStatePayload = {
   drinks?: Drink[];
   settings?: Settings;
 };
+type PublicMenuResponse = {
+  state?: AppStatePayload | null;
+  updatedAt?: string | null;
+  error?: string;
+};
+type CachedPublicMenu = {
+  state: AppStatePayload;
+  updatedAt: string | null;
+};
+type CartItem = {
+  id: string;
+  drinkId: string;
+  drinkName: string;
+  unitPrice: number;
+  qty: number;
+  drinkNotes?: string;
+  photoDataUrl?: string;
+};
+
+type CreateOrderResponse = {
+  order?: {
+    id: string;
+    code: string;
+    status: string;
+    subtotal: number;
+    createdAt: string;
+  };
+  error?: string;
+};
+
+const PUBLIC_MENU_CACHE_KEY = "public_menu_cache_v1";
+const PUBLIC_MENU_CART_KEY = "public_menu_cart_v1";
+
+function makeCartItemId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `cart_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
 
 type DrinkLike = Partial<Drink> & {
   publicMenuPriceMode?: string;
@@ -106,6 +145,10 @@ function formatBRL(value: number) {
 
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
+}
+
+function roundMoney(value: number) {
+  return Math.round(value * 100) / 100;
 }
 
 function applyPsychRounding(price: number, mode: RoundingMode) {
@@ -172,14 +215,83 @@ function computeDrinkCost(drink: Drink, ingredients: Ingredient[], settings: Set
   return total;
 }
 
+function readPublicMenuCache(): CachedPublicMenu | null {
+  try {
+    const raw = localStorage.getItem(PUBLIC_MENU_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as CachedPublicMenu;
+    if (!parsed || typeof parsed !== "object" || !parsed.state) return null;
+    return {
+      state: parsed.state,
+      updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writePublicMenuCache(state: AppStatePayload, updatedAt: string | null) {
+  try {
+    const payload: CachedPublicMenu = { state, updatedAt };
+    localStorage.setItem(PUBLIC_MENU_CACHE_KEY, JSON.stringify(payload));
+  } catch {
+    // noop
+  }
+}
+
+function readCart(): CartItem[] {
+  try {
+    const raw = localStorage.getItem(PUBLIC_MENU_CART_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as CartItem[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item) => ({
+        id: typeof item.id === "string" && item.id.trim() ? item.id : makeCartItemId(),
+        drinkId: typeof item.drinkId === "string" ? item.drinkId : "",
+        drinkName: typeof item.drinkName === "string" ? item.drinkName : "",
+        unitPrice: Number(item.unitPrice),
+        qty: Number(item.qty),
+        drinkNotes: typeof item.drinkNotes === "string" ? item.drinkNotes : undefined,
+        photoDataUrl: typeof item.photoDataUrl === "string" ? item.photoDataUrl : undefined,
+      }))
+      .filter((item) => item.drinkId && item.drinkName && Number.isFinite(item.unitPrice) && item.qty > 0);
+  } catch {
+    return [];
+  }
+}
+
+function writeCart(items: CartItem[]) {
+  try {
+    localStorage.setItem(PUBLIC_MENU_CART_KEY, JSON.stringify(items));
+  } catch {
+    // noop
+  }
+}
+
 export default function PublicMenuPage() {
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [drinks, setDrinks] = useState<Drink[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [search, setSearch] = useState("");
   const [hydrating, setHydrating] = useState(true);
-  const [dataSource, setDataSource] = useState<"supabase" | "error">("supabase");
+  const [dataSource, setDataSource] = useState<"supabase" | "local" | "error">("supabase");
   const [loadError, setLoadError] = useState("");
+
+  const [cartItems, setCartItems] = useState<CartItem[]>([]);
+  const [selectedDrinkId, setSelectedDrinkId] = useState<string | null>(null);
+  const [modalQty, setModalQty] = useState(1);
+  const [modalDrinkNotes, setModalDrinkNotes] = useState("");
+  const [isCartOpen, setIsCartOpen] = useState(false);
+
+  const [customerName, setCustomerName] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
+  const [orderNotes, setOrderNotes] = useState("");
+  const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
+  const [checkoutError, setCheckoutError] = useState("");
+  const [checkoutSuccess, setCheckoutSuccess] = useState("");
+  const [editingCartItemId, setEditingCartItemId] = useState<string | null>(null);
+  const [editingDrinkNotes, setEditingDrinkNotes] = useState("");
 
   const applyState = (state: AppStatePayload | null | undefined) => {
     if (!state) return false;
@@ -190,35 +302,75 @@ export default function PublicMenuPage() {
   };
 
   useEffect(() => {
+    setCartItems(readCart());
+  }, []);
+
+  useEffect(() => {
+    writeCart(cartItems);
+  }, [cartItems]);
+
+  useEffect(() => {
     let active = true;
 
     (async () => {
+      const localCache = readPublicMenuCache();
+      const hasLocalCache = Boolean(localCache?.state && applyState(localCache.state));
+      if (active && hasLocalCache) {
+        setDataSource("local");
+        setLoadError("");
+      }
+
       try {
-        const res = await fetch("/api/public-menu", { cache: "no-store" });
-        const payload = (await res.json()) as {
-          state?: AppStatePayload | null;
-          error?: string;
-        };
+        const params = new URLSearchParams();
+        if (localCache?.updatedAt) params.set("since", localCache.updatedAt);
+        const endpoint = params.size ? `/api/public-menu?${params.toString()}` : "/api/public-menu";
+        const res = await fetch(endpoint, { cache: "no-store" });
+
+        if (res.status === 304) {
+          if (active) {
+            setLoadError("");
+            setDataSource(hasLocalCache ? "local" : "supabase");
+          }
+          return;
+        }
+
+        const payload = (await res.json()) as PublicMenuResponse;
 
         if (!res.ok) {
           if (active) {
-            setDataSource("error");
-            setLoadError(payload.error ?? "Não foi possível carregar os dados públicos no Supabase.");
+            if (hasLocalCache) {
+              setDataSource("local");
+              setLoadError("Não foi possível atualizar agora. Exibindo dados locais salvos.");
+            } else {
+              setDataSource("error");
+              setLoadError(payload.error ?? "Não foi possível carregar os dados públicos no Supabase.");
+            }
           }
           return;
         }
 
         if (active && applyState(payload.state)) {
+          writePublicMenuCache(payload.state ?? {}, payload.updatedAt ?? null);
           setDataSource("supabase");
           setLoadError("");
         } else if (active) {
-          setDataSource("error");
-          setLoadError("Não foi possível carregar os dados públicos no Supabase.");
+          if (hasLocalCache) {
+            setDataSource("local");
+            setLoadError("Não foi possível atualizar agora. Exibindo dados locais salvos.");
+          } else {
+            setDataSource("error");
+            setLoadError("Não foi possível carregar os dados públicos no Supabase.");
+          }
         }
       } catch {
         if (active) {
-          setDataSource("error");
-          setLoadError("Erro ao consultar o Supabase para o cardápio público.");
+          if (hasLocalCache) {
+            setDataSource("local");
+            setLoadError("Erro ao atualizar do Supabase. Exibindo dados locais salvos.");
+          } else {
+            setDataSource("error");
+            setLoadError("Erro ao consultar o Supabase para o cardápio público.");
+          }
         }
       } finally {
         if (active) setHydrating(false);
@@ -250,22 +402,154 @@ export default function PublicMenuPage() {
           )
         );
 
-        const price =
-          settings.publicMenuPriceVisibility === "none"
-            ? null
-            : drink.publicMenuPriceMode === "manual"
-            ? drink.manualPublicPrice ?? 0
+        const orderPrice =
+          drink.publicMenuPriceMode === "manual"
+            ? roundMoney(drink.manualPublicPrice ?? 0)
             : drink.publicMenuPriceMode === "cmv"
-            ? cmv
-            : markup;
+            ? roundMoney(cmv)
+            : roundMoney(markup);
+
+        const displayPrice = settings.publicMenuPriceVisibility === "none" ? null : orderPrice;
 
         return {
           drink,
-          price,
+          displayPrice,
+          orderPrice,
           ingredientNames,
         };
       });
   }, [drinks, ingredients, search, settings]);
+
+  const rowByDrinkId = useMemo(() => new Map(rows.map((row) => [row.drink.id, row])), [rows]);
+  const selectedRow = selectedDrinkId ? rowByDrinkId.get(selectedDrinkId) ?? null : null;
+
+  const cartCount = useMemo(() => cartItems.reduce((acc, item) => acc + item.qty, 0), [cartItems]);
+  const cartSubtotal = useMemo(() => roundMoney(cartItems.reduce((acc, item) => acc + item.unitPrice * item.qty, 0)), [cartItems]);
+
+  const addToCart = (drinkId: string, qty: number, drinkNotesRaw: string) => {
+    const row = rowByDrinkId.get(drinkId);
+    if (!row) return;
+    const safeQty = Math.max(1, Math.min(30, Math.floor(qty)));
+    const drinkNotes = drinkNotesRaw.trim().slice(0, 240);
+
+    setCartItems((prev) => {
+      const idx = prev.findIndex((item) => item.drinkId === drinkId && (item.drinkNotes ?? "") === drinkNotes);
+      if (idx < 0) {
+        return [
+          ...prev,
+          {
+            id: makeCartItemId(),
+            drinkId,
+            drinkName: row.drink.name,
+            unitPrice: row.orderPrice,
+            qty: safeQty,
+            drinkNotes: drinkNotes || undefined,
+            photoDataUrl: row.drink.photoDataUrl,
+          },
+        ];
+      }
+
+      const next = [...prev];
+      next[idx] = { ...next[idx], qty: Math.min(30, next[idx].qty + safeQty) };
+      return next;
+    });
+  };
+
+  const updateCartQty = (itemId: string, qty: number) => {
+    const safeQty = Math.max(1, Math.min(30, Math.floor(qty || 1)));
+    setCartItems((prev) => prev.map((item) => (item.id === itemId ? { ...item, qty: safeQty } : item)));
+  };
+
+  const removeCartItem = (itemId: string) => {
+    setCartItems((prev) => prev.filter((item) => item.id !== itemId));
+    if (editingCartItemId === itemId) {
+      setEditingCartItemId(null);
+      setEditingDrinkNotes("");
+    }
+  };
+
+  const startEditCartItemNotes = (item: CartItem) => {
+    setEditingCartItemId(item.id);
+    setEditingDrinkNotes(item.drinkNotes ?? "");
+  };
+
+  const cancelEditCartItemNotes = () => {
+    setEditingCartItemId(null);
+    setEditingDrinkNotes("");
+  };
+
+  const saveCartItemNotes = (itemId: string) => {
+    const normalizedNotes = editingDrinkNotes.trim().slice(0, 240);
+
+    setCartItems((prev) => {
+      const current = prev.find((item) => item.id === itemId);
+      if (!current) return prev;
+
+      const targetNotes = normalizedNotes || undefined;
+      const mergeIdx = prev.findIndex(
+        (item) => item.id !== itemId && item.drinkId === current.drinkId && (item.drinkNotes ?? "") === (targetNotes ?? "")
+      );
+
+      if (mergeIdx >= 0) {
+        const next = [...prev];
+        next[mergeIdx] = { ...next[mergeIdx], qty: Math.min(30, next[mergeIdx].qty + current.qty) };
+        return next.filter((item) => item.id !== itemId);
+      }
+
+      return prev.map((item) => (item.id === itemId ? { ...item, drinkNotes: targetNotes } : item));
+    });
+
+    setEditingCartItemId(null);
+    setEditingDrinkNotes("");
+  };
+
+  const openDrinkModal = (drinkId: string) => {
+    setSelectedDrinkId(drinkId);
+    setModalQty(1);
+    setModalDrinkNotes("");
+    setCheckoutError("");
+    setCheckoutSuccess("");
+  };
+
+  const submitOrder = async () => {
+    if (!cartItems.length || isSubmittingOrder) return;
+
+    setIsSubmittingOrder(true);
+    setCheckoutError("");
+    setCheckoutSuccess("");
+
+    try {
+      const res = await fetch("/api/orders", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          items: cartItems.map((item) => ({ drinkId: item.drinkId, qty: item.qty, notes: item.drinkNotes })),
+          customerName,
+          customerPhone,
+          notes: orderNotes,
+        }),
+      });
+
+      const payload = (await res.json()) as CreateOrderResponse;
+
+      if (!res.ok || !payload.order) {
+        setCheckoutError(payload.error ?? "Não foi possível concluir o pedido.");
+        return;
+      }
+
+      setCheckoutSuccess(`Pedido ${payload.order.code} criado com sucesso.`);
+      setCartItems([]);
+      setCustomerName("");
+      setCustomerPhone("");
+      setOrderNotes("");
+      setEditingCartItemId(null);
+      setEditingDrinkNotes("");
+    } catch {
+      setCheckoutError("Erro de rede ao concluir pedido.");
+    } finally {
+      setIsSubmittingOrder(false);
+    }
+  };
 
   const themeVars: React.CSSProperties = {
     ["--bg" as never]: "#f6f2ea",
@@ -317,13 +601,38 @@ export default function PublicMenuPage() {
               <h1 style={{ margin: 0, fontSize: 26, letterSpacing: -0.5 }}>Cardápio de Drinks</h1>
               <div style={{ ...small, color: "#7a8793" }}>
                 Seção pública com drinks selecionados
-                {hydrating ? " • carregando..." : dataSource === "supabase" ? " • dados do Supabase" : " • erro ao carregar"}
+                {hydrating
+                  ? " • carregando..."
+                  : dataSource === "supabase"
+                  ? " • dados do Supabase"
+                  : dataSource === "local"
+                  ? " • dados locais (cache)"
+                  : " • erro ao carregar"}
               </div>
             </div>
 
-            <Link href="/admin" style={{ textDecoration: "none", padding: "6px 10px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--panel2)", color: "#7a8793", fontWeight: 600, fontSize: 12 }}>
-              Ir para área interna
-            </Link>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "center" }}>
+              <button
+                onClick={() => setIsCartOpen(true)}
+                style={{
+                  textDecoration: "none",
+                  padding: "8px 12px",
+                  borderRadius: 10,
+                  border: "1px solid var(--border)",
+                  background: "white",
+                  color: "#1d232a",
+                  fontWeight: 700,
+                  fontSize: 12,
+                  cursor: "pointer",
+                }}
+              >
+                Pedido ({cartCount})
+              </button>
+
+              <Link href="/admin" style={{ textDecoration: "none", padding: "8px 12px", borderRadius: 10, border: "1px solid var(--border)", background: "var(--panel2)", color: "#7a8793", fontWeight: 600, fontSize: 12 }}>
+                Ir para área interna
+              </Link>
+            </div>
           </div>
         </div>
 
@@ -334,12 +643,7 @@ export default function PublicMenuPage() {
             </div>
           ) : null}
 
-          <input
-            style={input}
-            placeholder="Buscar drink..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+          <input style={input} placeholder="Buscar drink..." value={search} onChange={(e) => setSearch(e.target.value)} />
 
           <div
             style={{
@@ -350,9 +654,10 @@ export default function PublicMenuPage() {
               gap: 12,
             }}
           >
-            {rows.map(({ drink, price, ingredientNames }) => (
-              <div
+            {rows.map(({ drink, displayPrice, ingredientNames }) => (
+              <button
                 key={drink.id}
+                onClick={() => openDrinkModal(drink.id)}
                 style={{
                   border: "1px solid var(--border)",
                   borderRadius: 16,
@@ -361,6 +666,9 @@ export default function PublicMenuPage() {
                   aspectRatio: "4 / 5",
                   display: "grid",
                   gridTemplateRows: "4fr 1fr",
+                  cursor: "pointer",
+                  padding: 0,
+                  textAlign: "left",
                 }}
               >
                 <div
@@ -400,13 +708,13 @@ export default function PublicMenuPage() {
                     {ingredientNames.length ? ingredientNames.join(" • ") : "Sem ingredientes cadastrados"}
                   </div>
 
-                  {price !== null && (
+                  {displayPrice !== null && (
                     <div style={{ marginTop: 5 }}>
-                      <div style={{ fontSize: 13, fontWeight: 650 }}>{formatBRL(price)}</div>
+                      <div style={{ fontSize: 13, fontWeight: 650 }}>{formatBRL(displayPrice)}</div>
                     </div>
                   )}
                 </div>
-              </div>
+              </button>
             ))}
 
             {rows.length === 0 && (
@@ -417,6 +725,298 @@ export default function PublicMenuPage() {
           </div>
         </div>
       </div>
+
+      {selectedRow && (
+        <div
+          onClick={() => setSelectedDrinkId(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(20, 24, 31, 0.5)",
+            zIndex: 50,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "min(860px, 100%)",
+              background: "white",
+              borderRadius: 18,
+              border: "1px solid var(--border)",
+              overflow: "hidden",
+              boxShadow: "0 24px 56px rgba(16, 20, 28, 0.22)",
+            }}
+          >
+            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 0 }}>
+              <div style={{ background: "var(--panel2)", minHeight: 240, maxHeight: 360 }}>
+                {selectedRow.drink.photoDataUrl ? (
+                  <img
+                    src={selectedRow.drink.photoDataUrl}
+                    alt={selectedRow.drink.name}
+                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                  />
+                ) : (
+                  <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--muted)" }}>
+                    Sem foto
+                  </div>
+                )}
+              </div>
+
+              <div style={{ padding: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "start" }}>
+                  <h2 style={{ margin: 0 }}>{selectedRow.drink.name}</h2>
+                  <button
+                    onClick={() => setSelectedDrinkId(null)}
+                    style={{
+                      border: "1px solid var(--border)",
+                      background: "white",
+                      borderRadius: 10,
+                      padding: "6px 10px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Fechar
+                  </button>
+                </div>
+
+                <div style={{ ...small, marginTop: 8 }}>
+                  {selectedRow.ingredientNames.length
+                    ? selectedRow.ingredientNames.join(" • ")
+                    : "Sem ingredientes cadastrados"}
+                </div>
+
+                {selectedRow.drink.notes ? (
+                  <div style={{ marginTop: 10, fontSize: 13, color: "#475465" }}>{selectedRow.drink.notes}</div>
+                ) : null}
+
+                {selectedRow.displayPrice !== null ? (
+                  <div style={{ marginTop: 12, fontWeight: 800, fontSize: 20 }}>{formatBRL(selectedRow.displayPrice)}</div>
+                ) : (
+                  <div style={{ marginTop: 12, fontWeight: 700, fontSize: 14, color: "#4e5a66" }}>
+                    Preço exibido no checkout
+                  </div>
+                )}
+
+                <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <label style={{ ...small, fontWeight: 700 }}>Quantidade</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={30}
+                    value={modalQty}
+                    onChange={(e) => setModalQty(Math.max(1, Math.min(30, Number(e.target.value) || 1)))}
+                    style={{ width: 78, ...input }}
+                  />
+                </div>
+                <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
+                  <label style={{ ...small, fontWeight: 700 }}>Notas para este drink (opcional)</label>
+                  <textarea
+                    style={{ ...input, resize: "vertical", minHeight: 78 }}
+                    placeholder="Ex.: pouco gelo, sem canudo..."
+                    value={modalDrinkNotes}
+                    onChange={(e) => setModalDrinkNotes(e.target.value)}
+                    maxLength={240}
+                  />
+                </div>
+                <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    onClick={() => {
+                      addToCart(selectedRow.drink.id, modalQty, modalDrinkNotes);
+                      setSelectedDrinkId(null);
+                      setIsCartOpen(true);
+                    }}
+                    style={{
+                      border: "1px solid var(--border)",
+                      borderRadius: 10,
+                      background: "var(--accent)",
+                      color: "white",
+                      padding: "10px 12px",
+                      fontWeight: 700,
+                      cursor: "pointer",
+                    }}
+                  >
+                    Adicionar ao pedido
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isCartOpen && (
+        <div
+          onClick={() => setIsCartOpen(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(20, 24, 31, 0.5)",
+            zIndex: 60,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "min(920px, 100%)",
+              maxHeight: "90vh",
+              overflow: "auto",
+              background: "white",
+              borderRadius: 18,
+              border: "1px solid var(--border)",
+              boxShadow: "0 24px 56px rgba(16, 20, 28, 0.22)",
+              padding: 16,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+              <h2 style={{ margin: 0 }}>Seu pedido ({cartCount})</h2>
+              <button
+                onClick={() => setIsCartOpen(false)}
+                style={{ border: "1px solid var(--border)", borderRadius: 10, background: "white", padding: "6px 10px", cursor: "pointer" }}
+              >
+                Fechar
+              </button>
+            </div>
+
+            {checkoutSuccess ? (
+              <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: "#ecfdf5", border: "1px solid #a7f3d0", color: "#065f46", fontSize: 13 }}>
+                {checkoutSuccess}
+              </div>
+            ) : null}
+
+            {checkoutError ? (
+              <div style={{ marginTop: 10, padding: 10, borderRadius: 10, background: "#fff1f1", border: "1px solid #f0c2c2", color: "#7b1f1f", fontSize: 13 }}>
+                {checkoutError}
+              </div>
+            ) : null}
+
+            {!cartItems.length ? (
+              <div style={{ marginTop: 14, padding: 14, border: "1px dashed var(--border)", borderRadius: 12, color: "var(--muted)", background: "var(--panel2)" }}>
+                Seu pedido está vazio.
+              </div>
+            ) : (
+              <div style={{ marginTop: 14, display: "grid", gap: 10 }}>
+                {cartItems.map((item) => (
+                  <div key={item.id} style={{ border: "1px solid var(--border)", borderRadius: 12, padding: 10, display: "grid", gap: 8 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                      <div>
+                        <div style={{ fontWeight: 700 }}>{item.drinkName}</div>
+                        <div style={{ ...small }}>{formatBRL(item.unitPrice)} por unidade</div>
+                        {editingCartItemId === item.id ? (
+                          <div style={{ marginTop: 6, display: "grid", gap: 6 }}>
+                            <textarea
+                              style={{ ...input, ...small, minHeight: 68, padding: 8 }}
+                              placeholder="Adicionar nota para este drink"
+                              value={editingDrinkNotes}
+                              onChange={(e) => setEditingDrinkNotes(e.target.value)}
+                              maxLength={240}
+                            />
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                              <button
+                                onClick={() => saveCartItemNotes(item.id)}
+                                style={{ border: "1px solid var(--border)", borderRadius: 8, background: "var(--accent)", color: "white", padding: "5px 8px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                              >
+                                Salvar
+                              </button>
+                              <button
+                                onClick={cancelEditCartItemNotes}
+                                style={{ border: "1px solid var(--border)", borderRadius: 8, background: "white", color: "var(--ink)", padding: "5px 8px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                            <div style={small}>Notas: {item.drinkNotes ? item.drinkNotes : "sem notas"}</div>
+                            <button
+                              onClick={() => startEditCartItemNotes(item)}
+                              style={{ border: "1px solid var(--border)", borderRadius: 8, background: "white", color: "var(--muted)", padding: "2px 7px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}
+                            >
+                              Editar
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <input
+                          type="number"
+                          min={1}
+                          max={30}
+                          value={item.qty}
+                          onChange={(e) => updateCartQty(item.id, Number(e.target.value) || 1)}
+                          style={{ ...input, width: 76 }}
+                        />
+                        <button
+                          onClick={() => removeCartItem(item.id)}
+                          style={{ border: "1px solid #f0c2c2", borderRadius: 10, background: "#fff1f1", color: "#7b1f1f", padding: "8px 10px", cursor: "pointer" }}
+                        >
+                          Remover
+                        </button>
+                      </div>
+                    </div>
+                    <div style={{ ...small, textAlign: "right" }}>
+                      Total item: {formatBRL(roundMoney(item.unitPrice * item.qty))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ marginTop: 16, display: "grid", gap: 10 }}>
+              <div style={{ fontWeight: 800, fontSize: 18 }}>Subtotal: {formatBRL(cartSubtotal)}</div>
+
+              <input
+                style={input}
+                placeholder="Nome do cliente (opcional)"
+                value={customerName}
+                onChange={(e) => setCustomerName(e.target.value)}
+                maxLength={80}
+              />
+
+              <input
+                style={input}
+                placeholder="Telefone (opcional)"
+                value={customerPhone}
+                onChange={(e) => setCustomerPhone(e.target.value)}
+                maxLength={30}
+              />
+
+              <textarea
+                style={{ ...input, resize: "vertical", minHeight: 84 }}
+                placeholder="Observações do pedido (opcional)"
+                value={orderNotes}
+                onChange={(e) => setOrderNotes(e.target.value)}
+                maxLength={400}
+              />
+
+              <button
+                onClick={submitOrder}
+                disabled={!cartItems.length || isSubmittingOrder}
+                style={{
+                  border: "1px solid var(--border)",
+                  borderRadius: 10,
+                  background: !cartItems.length || isSubmittingOrder ? "#ced8e3" : "var(--accent)",
+                  color: "white",
+                  padding: "12px 14px",
+                  fontWeight: 800,
+                  cursor: !cartItems.length || isSubmittingOrder ? "not-allowed" : "pointer",
+                }}
+              >
+                {isSubmittingOrder ? "Enviando pedido..." : "Concluir pedido"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
