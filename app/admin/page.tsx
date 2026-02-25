@@ -724,7 +724,7 @@ export default function Page() {
     try {
       const params = new URLSearchParams();
       if (ordersUpdatedAt) params.set("since", ordersUpdatedAt);
-      const endpoint = params.size ? `/api/orders?${params.toString()}` : "/api/orders";
+      const endpoint = params.size ? `/admin/api/orders?${params.toString()}` : "/admin/api/orders";
       const res = await fetch(endpoint, { cache: "no-store" });
 
       if (res.status === 304) {
@@ -765,7 +765,7 @@ export default function Page() {
       setUpdatingOrderId(orderId);
       setOrdersError("");
       try {
-        const res = await fetch(`/api/orders/${orderId}/status`, {
+        const res = await fetch(`/admin/api/orders/${orderId}/status`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ status }),
