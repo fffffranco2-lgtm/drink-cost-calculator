@@ -3,5 +3,5 @@
 > node scripts/generate-table-qr-urls.mjs --count 2 --base-url http://localhost:3000/
 
 table_code,url
-M01,http://localhost:3000/cardapio?mesa=M01&token=e6fde74b91b106e1728a1496e2afcb5653549b22759126e6b79397d2a055ae37
-M02,http://localhost:3000/cardapio?mesa=M02&token=693cf463f831421c3a013f4505b1f8803b659e9c3a285adb6c8a1f6df891fad5
+M01,https://drink-cost-calculator.vercel.app/cardapio?mesa=M01&token=e6fde74b91b106e1728a1496e2afcb5653549b22759126e6b79397d2a055ae37
+M02,https://drink-cost-calculator.vercel.app/cardapio?mesa=M02&token=693cf463f831421c3a013f4505b1f8803b659e9c3a285adb6c8a1f6df891fad5
