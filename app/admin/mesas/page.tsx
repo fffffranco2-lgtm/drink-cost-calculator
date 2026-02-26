@@ -94,11 +94,12 @@ export default function AdminTablesPage() {
         setError(payload.error ?? "Falha ao criar mesa.");
         return;
       }
+      const createdTable = payload.table;
 
-      setTables((prev) => [...prev, payload.table]);
+      setTables((prev) => [...prev, createdTable]);
       setDraftById((prev) => ({
         ...prev,
-        [payload.table!.id]: { name: payload.table!.name, code: payload.table!.code },
+        [createdTable.id]: { name: createdTable.name, code: createdTable.code },
       }));
       setCreateName("");
       setCreateCode("");
@@ -128,11 +129,12 @@ export default function AdminTablesPage() {
         setError(payload.error ?? "Falha ao salvar mesa.");
         return;
       }
+      const updatedTable = payload.table;
 
-      setTables((prev) => prev.map((table) => (table.id === tableId ? payload.table! : table)));
+      setTables((prev) => prev.map((table) => (table.id === tableId ? updatedTable : table)));
       setDraftById((prev) => ({
         ...prev,
-        [tableId]: { name: payload.table!.name, code: payload.table!.code },
+        [tableId]: { name: updatedTable.name, code: updatedTable.code },
       }));
     } catch {
       setError("Erro de rede ao salvar mesa.");

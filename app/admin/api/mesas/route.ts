@@ -1,6 +1,6 @@
 import { createHmac } from "crypto";
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 type TableConfigRow = {
   id: string;
@@ -81,7 +81,7 @@ function buildTablePresentation(row: TableConfigRow, origin: string) {
   };
 }
 
-async function resolveAvailableCode(supabase: ReturnType<typeof createClient>, preferred: string) {
+async function resolveAvailableCode(supabase: SupabaseClient, preferred: string) {
   for (let i = 0; i < 100; i += 1) {
     const suffix = i === 0 ? "" : `_${String(i + 1)}`;
     const maxBaseLen = 20 - suffix.length;
