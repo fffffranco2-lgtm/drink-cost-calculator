@@ -69,6 +69,20 @@ TABLE_QR_SIGNING_SECRET=... npm run tables:qr:urls -- --tables M01,M05,M12 --bas
 Cada URL sai no formato:
 - `/cardapio?mesa=M12&token=...`
 
+## QZ Tray (assinatura confiável)
+
+Para evitar prompt de autorização em toda impressão no QZ Tray, configure:
+
+```bash
+QZ_CERT_PEM="-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
+QZ_PRIVATE_KEY_PEM="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+```
+
+Observações:
+- `QZ_CERT_PEM` é o certificado público da assinatura QZ.
+- `QZ_PRIVATE_KEY_PEM` é a chave privada correspondente (nunca expor no frontend).
+- As rotas `/api/qz/certificate` e `/api/qz/sign` usam essas variáveis e exigem usuário admin autenticado.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
