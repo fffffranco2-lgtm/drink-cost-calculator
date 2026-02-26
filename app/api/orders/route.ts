@@ -338,7 +338,9 @@ export async function GET(request: Request) {
     ordersQuery = ordersQuery.eq("status", statusFilter);
   }
 
-  let { data: ordersData, error: ordersError } = await ordersQuery;
+  const initialOrdersResult = await ordersQuery;
+  let ordersData = (initialOrdersResult.data ?? null) as OrderRow[] | null;
+  let ordersError = initialOrdersResult.error;
 
   if (ordersError && (ordersError.message.toLowerCase().includes("source") || ordersError.message.toLowerCase().includes("table_code"))) {
     const fallback = await supabase
@@ -346,7 +348,7 @@ export async function GET(request: Request) {
       .select("id, code, customer_name, customer_phone, notes, status, subtotal, created_at, updated_at")
       .order("created_at", { ascending: false })
       .limit(200);
-    ordersData = fallback.data;
+    ordersData = (fallback.data ?? null) as OrderRow[] | null;
     ordersError = fallback.error;
   }
 
