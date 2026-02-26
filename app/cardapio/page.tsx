@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import React, { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "next/navigation";
 
 type RecipeUnit = "ml" | "un" | "dash" | "drop";
 type PricingModel = "by_ml" | "by_bottle" | "by_unit";
@@ -286,15 +285,8 @@ function writeCart(items: CartItem[]) {
 }
 
 export default function PublicMenuPage() {
-  const searchParams = useSearchParams();
-  const qrTableCode = useMemo(
-    () => normalizeTableCode(searchParams.get("mesa") ?? searchParams.get("table") ?? searchParams.get("m")),
-    [searchParams]
-  );
-  const qrTableToken = useMemo(
-    () => (searchParams.get("token") ?? searchParams.get("t") ?? "").trim().toLowerCase().slice(0, 128),
-    [searchParams]
-  );
+  const [qrTableCode, setQrTableCode] = useState<string | null>(null);
+  const [qrTableToken, setQrTableToken] = useState("");
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [drinks, setDrinks] = useState<Drink[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
@@ -330,6 +322,14 @@ export default function PublicMenuPage() {
 
   useEffect(() => {
     setCartItems(readCart());
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tableCode = normalizeTableCode(params.get("mesa") ?? params.get("table") ?? params.get("m"));
+    const tableToken = (params.get("token") ?? params.get("t") ?? "").trim().toLowerCase().slice(0, 128);
+    setQrTableCode(tableCode);
+    setQrTableToken(tableToken);
   }, []);
 
   useEffect(() => {
