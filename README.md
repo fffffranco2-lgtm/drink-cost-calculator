@@ -78,9 +78,17 @@ QZ_CERT_PEM="-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
 QZ_PRIVATE_KEY_PEM="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
 ```
 
+Alternativa (mais robusta em alguns painéis de deploy): usar base64 dos PEMs
+
+```bash
+QZ_CERT_PEM_BASE64="LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t..."
+QZ_PRIVATE_KEY_PEM_BASE64="LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0t..."
+```
+
 Observações:
 - `QZ_CERT_PEM` é o certificado público da assinatura QZ.
 - `QZ_PRIVATE_KEY_PEM` é a chave privada correspondente (nunca expor no frontend).
+- As variáveis `*_BASE64` são fallback das variáveis principais e podem ser usadas quando o provedor de deploy tiver problemas com multiline.
 - As rotas `/api/qz/certificate` e `/api/qz/sign` usam essas variáveis e exigem usuário admin autenticado.
 
 ## Learn More

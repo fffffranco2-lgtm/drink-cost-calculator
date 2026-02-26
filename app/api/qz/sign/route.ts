@@ -1,6 +1,7 @@
 import { createSign } from "crypto";
 import { NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
+import { pemEnvDebug, readPemFromEnv } from "@/lib/pem-env";
 
 type SignBody = {
   toSign?: string;
@@ -50,11 +51,6 @@ async function requireAdminUser(request: Request) {
   return { user };
 }
 
-function normalizeMultilineEnv(value: string | undefined) {
-  if (!value) return "";
-  return value.replace(/\\n/g, "\n").trim();
-}
-
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
@@ -73,8 +69,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Campo toSign inválido." }, { status: 400 });
   }
 
-  const privateKey = normalizeMultilineEnv(process.env.QZ_PRIVATE_KEY_PEM);
+  const privateKey = readPemFromEnv("QZ_PRIVATE_KEY_PEM");
   if (!privateKey) {
+    console.error("[qz/sign] QZ_PRIVATE_KEY_PEM not configured", pemEnvDebug("QZ_PRIVATE_KEY_PEM"));
     return NextResponse.json({ error: "QZ_PRIVATE_KEY_PEM não configurado." }, { status: 500 });
   }
 
@@ -88,4 +85,3 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Falha ao assinar payload do QZ." }, { status: 500 });
   }
 }
-

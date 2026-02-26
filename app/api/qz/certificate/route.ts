@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { createServerClient } from "@supabase/ssr";
+import { pemEnvDebug, readPemFromEnv } from "@/lib/pem-env";
 
 function readCookies(request: Request) {
   const raw = request.headers.get("cookie") ?? "";
@@ -45,19 +46,15 @@ async function requireAdminUser(request: Request) {
   return { user };
 }
 
-function normalizeMultilineEnv(value: string | undefined) {
-  if (!value) return "";
-  return value.replace(/\\n/g, "\n").trim();
-}
-
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
   const auth = await requireAdminUser(request);
   if (auth.error) return auth.error;
 
-  const certificate = normalizeMultilineEnv(process.env.QZ_CERT_PEM);
+  const certificate = readPemFromEnv("QZ_CERT_PEM");
   if (!certificate) {
+    console.error("[qz/certificate] QZ_CERT_PEM not configured", pemEnvDebug("QZ_CERT_PEM"));
     return NextResponse.json({ error: "QZ_CERT_PEM não configurado." }, { status: 500 });
   }
 
@@ -68,4 +65,3 @@ export async function GET(request: Request) {
     },
   });
 }
-
