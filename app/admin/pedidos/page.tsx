@@ -85,6 +85,9 @@ const FONT_SCALE = {
   lg: 20,
 } as const;
 const BAR_LOGO_PATH = "/manteca-logo.svg";
+const PRINT_MODE_STORAGE_KEY = "orders_print_mode";
+const QZ_PRINTER_STORAGE_KEY = "orders_qz_printer_name";
+const AUTO_PRINT_STORAGE_KEY = "orders_auto_print_enabled";
 
 function formatBRL(value: number) {
   return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -234,10 +237,14 @@ export default function AdminOrdersPage() {
   const [sessionLoading, setSessionLoading] = useState(false);
   const [printOrderState, setPrintOrderState] = useState<AdminOrder | null>(null);
   const [printMode, setPrintMode] = useState<PrintMode>("qz");
+  const [autoPrintEnabled, setAutoPrintEnabled] = useState(false);
   const [qzPrinterName, setQzPrinterName] = useState("");
   const [qzBusy, setQzBusy] = useState(false);
   const qzLoaderRef = useRef<Promise<QzApi> | null>(null);
   const qzSecurityReadyRef = useRef(false);
+  const knownOrderIdsRef = useRef<Set<string>>(new Set());
+  const knownOrdersReadyRef = useRef(false);
+  const autoPrintQueueRef = useRef(Promise.resolve());
 
   const loadOrders = useCallback(async (options?: { background?: boolean }) => {
     const background = Boolean(options?.background);
@@ -581,12 +588,14 @@ export default function AdminOrdersPage() {
 
   useEffect(() => {
     try {
-      const savedMode = localStorage.getItem("orders_print_mode");
+      const savedMode = localStorage.getItem(PRINT_MODE_STORAGE_KEY);
       if (savedMode === "qz" || savedMode === "browser") {
         setPrintMode(savedMode);
       }
-      const savedPrinter = localStorage.getItem("orders_qz_printer_name");
+      const savedPrinter = localStorage.getItem(QZ_PRINTER_STORAGE_KEY);
       if (savedPrinter) setQzPrinterName(savedPrinter);
+      const savedAutoPrint = localStorage.getItem(AUTO_PRINT_STORAGE_KEY);
+      if (savedAutoPrint === "1") setAutoPrintEnabled(true);
     } catch {
       // ignorar indisponibilidade de storage
     }
@@ -594,7 +603,7 @@ export default function AdminOrdersPage() {
 
   useEffect(() => {
     try {
-      localStorage.setItem("orders_print_mode", printMode);
+      localStorage.setItem(PRINT_MODE_STORAGE_KEY, printMode);
     } catch {
       // ignorar indisponibilidade de storage
     }
@@ -602,11 +611,39 @@ export default function AdminOrdersPage() {
 
   useEffect(() => {
     try {
-      localStorage.setItem("orders_qz_printer_name", qzPrinterName);
+      localStorage.setItem(QZ_PRINTER_STORAGE_KEY, qzPrinterName);
     } catch {
       // ignorar indisponibilidade de storage
     }
   }, [qzPrinterName]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(AUTO_PRINT_STORAGE_KEY, autoPrintEnabled ? "1" : "0");
+    } catch {
+      // ignorar indisponibilidade de storage
+    }
+  }, [autoPrintEnabled]);
+
+  useEffect(() => {
+    if (!orders.length) return;
+
+    if (!knownOrdersReadyRef.current) {
+      knownOrderIdsRef.current = new Set(orders.map((order) => order.id));
+      knownOrdersReadyRef.current = true;
+      return;
+    }
+
+    const newPendingOrders = orders.filter((order) => !knownOrderIdsRef.current.has(order.id) && order.status === "pendente");
+    for (const order of orders) knownOrderIdsRef.current.add(order.id);
+    if (!autoPrintEnabled || !newPendingOrders.length) return;
+
+    autoPrintQueueRef.current = autoPrintQueueRef.current.then(async () => {
+      for (const order of newPendingOrders) {
+        await printOrderWithMode(order);
+      }
+    });
+  }, [orders, autoPrintEnabled, printOrderWithMode]);
 
   useEffect(() => {
     const handleAfterPrint = () => {
@@ -776,7 +813,24 @@ export default function AdminOrdersPage() {
             {activeSession ? `Sessão aberta: ${activeSession.code}` : "Bar fechado"} • {orders.length} pedido(s)
           </div>
           <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-            <div style={{ ...small, fontWeight: 700 }}>Impressão</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <div style={{ ...small, fontWeight: 700 }}>Impressão</div>
+              {autoPrintEnabled ? (
+                <span
+                  style={{
+                    fontSize: FONT_SCALE.sm,
+                    fontWeight: 700,
+                    color: "#0f5132",
+                    background: "#d1fae5",
+                    border: "1px solid #86efac",
+                    borderRadius: 999,
+                    padding: "2px 8px",
+                  }}
+                >
+                  Autoimpressão ativa
+                </span>
+              ) : null}
+            </div>
             <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
               <select
                 value={printMode}
@@ -803,6 +857,16 @@ export default function AdminOrdersPage() {
                   </button>
                 </>
               ) : null}
+
+              <label style={{ display: "inline-flex", alignItems: "center", gap: 6, ...small }}>
+                <input
+                  type="checkbox"
+                  checked={autoPrintEnabled}
+                  onChange={(e) => setAutoPrintEnabled(e.target.checked)}
+                  disabled={qzBusy}
+                />
+                Autoimprimir pedidos novos
+              </label>
             </div>
             {printMode === "qz" ? (
               <div style={small}>Impressão direta ESC/POS com encoding ISO-8859-1.</div>
