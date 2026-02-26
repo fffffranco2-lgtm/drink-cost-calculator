@@ -84,6 +84,10 @@ export async function GET(request: Request) {
     .limit(30);
 
   if (sessionsError) {
+    const msg = (sessionsError.message ?? "").toLowerCase();
+    if (msg.includes("order_sessions") || msg.includes("does not exist") || msg.includes("not found")) {
+      return NextResponse.json({ sessions: [] });
+    }
     return NextResponse.json({ error: "Falha ao carregar histórico de sessões." }, { status: 500 });
   }
 
@@ -99,7 +103,10 @@ export async function GET(request: Request) {
     .in("session_id", sessionIds);
 
   if (ordersError) {
-    return NextResponse.json({ error: "Falha ao carregar histórico de pedidos por sessão." }, { status: 500 });
+    const msg = (ordersError.message ?? "").toLowerCase();
+    if (!msg.includes("session_id") && !msg.includes("does not exist") && !msg.includes("not found")) {
+      return NextResponse.json({ error: "Falha ao carregar histórico de pedidos por sessão." }, { status: 500 });
+    }
   }
 
   const acc = new Map<string, { ordersCount: number; subtotal: number }>();

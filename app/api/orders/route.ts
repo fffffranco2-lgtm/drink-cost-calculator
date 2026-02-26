@@ -82,6 +82,17 @@ type OrderSessionRow = {
   closed_at: string | null;
 };
 
+function withDetails(message: string, error: unknown) {
+  const errMsg = typeof error === "object" && error && "message" in error ? String((error as { message?: unknown }).message ?? "") : "";
+  return errMsg ? `${message} (${errMsg})` : message;
+}
+
+function isMissingOrderSessionsTable(error: unknown) {
+  const errMsg = typeof error === "object" && error && "message" in error ? String((error as { message?: unknown }).message ?? "") : "";
+  const normalized = errMsg.toLowerCase();
+  return normalized.includes("order_sessions") && (normalized.includes("does not exist") || normalized.includes("not found") || normalized.includes("relation"));
+}
+
 type OrderItemRow = {
   order_id: string;
   drink_name: string;
@@ -330,7 +341,15 @@ export async function GET(request: Request) {
   const since = sinceParam ? new Date(sinceParam) : null;
   const activeSessionResult = await getActiveOrderSession(supabase);
   if (activeSessionResult.error) {
-    return NextResponse.json({ error: "Falha ao consultar sessão atual do bar." }, { status: 500 });
+    if (isMissingOrderSessionsTable(activeSessionResult.error)) {
+      return NextResponse.json({
+        debugVersion: ORDERS_API_DEBUG_VERSION,
+        updatedAt: null,
+        session: { isOpen: false },
+        orders: [],
+      });
+    }
+    return NextResponse.json({ error: withDetails("Falha ao consultar sessão atual do bar.", activeSessionResult.error) }, { status: 500 });
   }
   const activeSession = activeSessionResult.session;
 
@@ -513,7 +532,7 @@ export async function POST(request: Request) {
   });
   const activeSessionResult = await getActiveOrderSession(supabase);
   if (activeSessionResult.error) {
-    return NextResponse.json({ error: "Falha ao consultar sessão atual do bar." }, { status: 500 });
+    return NextResponse.json({ error: withDetails("Falha ao consultar sessão atual do bar.", activeSessionResult.error) }, { status: 500 });
   }
   const activeSession = activeSessionResult.session;
   if (!activeSession) {

@@ -37,16 +37,6 @@ type ActiveSession = {
   openedAt: string;
 };
 
-type SessionHistoryRow = {
-  id: string;
-  code: string;
-  openedAt: string;
-  closedAt: string | null;
-  isOpen: boolean;
-  ordersCount: number;
-  subtotal: number;
-};
-
 const FONT_SCALE = {
   sm: 12,
   md: 14,
@@ -69,7 +59,6 @@ export default function AdminOrdersPage() {
   const [completedBucketMaxHeight, setCompletedBucketMaxHeight] = useState<number | null>(null);
   const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
   const [sessionLoading, setSessionLoading] = useState(false);
-  const [sessionHistory, setSessionHistory] = useState<SessionHistoryRow[]>([]);
 
   const loadOrders = useCallback(async (options?: { background?: boolean }) => {
     const background = Boolean(options?.background);
@@ -130,20 +119,6 @@ export default function AdminOrdersPage() {
     }
   }, [ordersUpdatedAt]);
 
-  const loadSessionHistory = useCallback(async () => {
-    try {
-      const res = await fetch("/api/orders/sessions", { cache: "no-store" });
-      const payload = (await res.json()) as { sessions?: SessionHistoryRow[]; error?: string };
-      if (!res.ok) {
-        setOrdersError(payload.error ?? "Falha ao carregar histórico do bar.");
-        return;
-      }
-      setSessionHistory(Array.isArray(payload.sessions) ? payload.sessions : []);
-    } catch {
-      setOrdersError("Erro de rede ao carregar histórico do bar.");
-    }
-  }, []);
-
   const openBar = useCallback(async () => {
     setSessionLoading(true);
     setOrdersError("");
@@ -162,13 +137,13 @@ export default function AdminOrdersPage() {
         setActiveSession(payload.session);
       }
       setOrdersUpdatedAt(null);
-      await Promise.all([loadOrders(), loadSessionHistory()]);
+      await loadOrders();
     } catch {
       setOrdersError("Erro de rede ao abrir o bar.");
     } finally {
       setSessionLoading(false);
     }
-  }, [loadOrders, loadSessionHistory]);
+  }, [loadOrders]);
 
   const closeBar = useCallback(async () => {
     setSessionLoading(true);
@@ -183,22 +158,20 @@ export default function AdminOrdersPage() {
       setActiveSession(null);
       setOrders([]);
       setOrdersUpdatedAt(null);
-      await loadSessionHistory();
     } catch {
       setOrdersError("Erro de rede ao fechar o bar.");
     } finally {
       setSessionLoading(false);
     }
-  }, [loadSessionHistory]);
+  }, []);
 
   useEffect(() => {
     void loadOrders();
-    void loadSessionHistory();
     const interval = setInterval(() => {
       void loadOrders({ background: true });
     }, 15000);
     return () => clearInterval(interval);
-  }, [loadOrders, loadSessionHistory]);
+  }, [loadOrders]);
 
   const moveOrderTo = useCallback(
     async (orderId: string, status: OrderStatus) => {
@@ -307,6 +280,9 @@ export default function AdminOrdersPage() {
               <Link href="/" style={{ ...btn, textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
                 Cardápio público
               </Link>
+              <Link href="/admin/pedidos/historico" style={{ ...btn, textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
+                Histórico
+              </Link>
               <button style={btn} onClick={() => void loadOrders()} disabled={ordersLoading || Boolean(updatingOrderId)}>
                 {ordersLoading ? "Atualizando..." : "Atualizar"}
               </button>
@@ -329,30 +305,6 @@ export default function AdminOrdersPage() {
             {activeSession ? `Sessão aberta: ${activeSession.code}` : "Bar fechado"} • {orders.length} pedido(s)
           </div>
           {ordersError ? <div style={{ ...small, color: "#b00020", marginTop: 8 }}>{ordersError}</div> : null}
-        </div>
-
-        <div style={{ ...card, marginBottom: 12 }}>
-          <h2 style={{ margin: 0, fontSize: FONT_SCALE.md }}>Histórico de aberturas</h2>
-          <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-            {sessionHistory.map((session) => (
-              <div key={session.id} style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 10, background: "white" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                  <strong>{session.code}</strong>
-                  <div style={small}>{session.isOpen ? "Aberta" : "Fechada"}</div>
-                </div>
-                <div style={{ ...small, marginTop: 4 }}>
-                  Abertura: {new Date(session.openedAt).toLocaleString("pt-BR")}
-                  {session.closedAt ? ` • Fechamento: ${new Date(session.closedAt).toLocaleString("pt-BR")}` : ""}
-                </div>
-                <div style={{ ...small, marginTop: 2 }}>
-                  Pedidos: {session.ordersCount} • Total: {formatBRL(session.subtotal)}
-                </div>
-              </div>
-            ))}
-            {sessionHistory.length === 0 ? (
-              <div style={{ ...small, padding: 10, border: "1px dashed var(--border)", borderRadius: 10 }}>Sem histórico de aberturas.</div>
-            ) : null}
-          </div>
         </div>
 
         <div className="orders-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>

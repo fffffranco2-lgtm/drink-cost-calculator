@@ -60,7 +60,9 @@ function makeSessionCode() {
   const d = String(now.getDate()).padStart(2, "0");
   const hh = String(now.getHours()).padStart(2, "0");
   const mm = String(now.getMinutes()).padStart(2, "0");
-  return `BAR-${y}${m}${d}-${hh}${mm}`;
+  const ss = String(now.getSeconds()).padStart(2, "0");
+  const rand = Math.random().toString(36).slice(2, 4).toUpperCase();
+  return `BAR-${y}${m}${d}-${hh}${mm}${ss}-${rand}`;
 }
 
 async function getActiveSession(supabase: SupabaseClient) {
@@ -74,6 +76,17 @@ async function getActiveSession(supabase: SupabaseClient) {
 
   if (error) return { error };
   return { session: (data as SessionRow | null | undefined) ?? null };
+}
+
+function withDetails(message: string, error: unknown) {
+  const errMsg = typeof error === "object" && error && "message" in error ? String((error as { message?: unknown }).message ?? "") : "";
+  return errMsg ? `${message} (${errMsg})` : message;
+}
+
+function isUniqueViolation(error: unknown) {
+  const errMsg = typeof error === "object" && error && "message" in error ? String((error as { message?: unknown }).message ?? "") : "";
+  const normalized = errMsg.toLowerCase();
+  return normalized.includes("duplicate") || normalized.includes("unique");
 }
 
 export const dynamic = "force-dynamic";
@@ -96,7 +109,7 @@ export async function GET(request: Request) {
   });
   const result = await getActiveSession(supabase);
   if (result.error) {
-    return NextResponse.json({ error: "Falha ao consultar sessão do bar." }, { status: 500 });
+    return NextResponse.json({ error: withDetails("Falha ao consultar sessão do bar.", result.error) }, { status: 500 });
   }
 
   if (!result.session) {
@@ -131,7 +144,7 @@ export async function POST(request: Request) {
   });
   const current = await getActiveSession(supabase);
   if (current.error) {
-    return NextResponse.json({ error: "Falha ao consultar sessão do bar." }, { status: 500 });
+    return NextResponse.json({ error: withDetails("Falha ao consultar sessão do bar.", current.error) }, { status: 500 });
   }
   if (current.session) {
     return NextResponse.json({
@@ -140,14 +153,36 @@ export async function POST(request: Request) {
     });
   }
 
-  const { data, error } = await supabase
-    .from("order_sessions")
-    .insert({ code: makeSessionCode() })
-    .select("id, code, opened_at, closed_at")
-    .single<SessionRow>();
+  let data: SessionRow | null = null;
+  let lastError: unknown = null;
 
-  if (error || !data) {
-    return NextResponse.json({ error: "Falha ao abrir o bar." }, { status: 500 });
+  for (let i = 0; i < 5; i += 1) {
+    const result = await supabase
+      .from("order_sessions")
+      .insert({ code: makeSessionCode() })
+      .select("id, code, opened_at, closed_at")
+      .single<SessionRow>();
+
+    if (!result.error && result.data) {
+      data = result.data;
+      break;
+    }
+
+    lastError = result.error;
+    if (!isUniqueViolation(result.error)) {
+      break;
+    }
+  }
+
+  if (!data) {
+    const race = await getActiveSession(supabase);
+    if (race.session) {
+      return NextResponse.json({
+        isOpen: true,
+        session: { id: race.session.id, code: race.session.code, openedAt: race.session.opened_at },
+      });
+    }
+    return NextResponse.json({ error: withDetails("Falha ao abrir o bar.", lastError) }, { status: 500 });
   }
 
   return NextResponse.json({
@@ -174,7 +209,7 @@ export async function PATCH(request: Request) {
   });
   const current = await getActiveSession(supabase);
   if (current.error) {
-    return NextResponse.json({ error: "Falha ao consultar sessão do bar." }, { status: 500 });
+    return NextResponse.json({ error: withDetails("Falha ao consultar sessão do bar.", current.error) }, { status: 500 });
   }
   if (!current.session) {
     return NextResponse.json({ isOpen: false, session: null });
@@ -188,7 +223,7 @@ export async function PATCH(request: Request) {
     .single<SessionRow>();
 
   if (error || !data) {
-    return NextResponse.json({ error: "Falha ao fechar o bar." }, { status: 500 });
+    return NextResponse.json({ error: withDetails("Falha ao fechar o bar.", error) }, { status: 500 });
   }
 
   return NextResponse.json({

@@ -11,7 +11,8 @@
     "supabase:link": "supabase link --project-ref cukfuavlylrlsfukxbot",
     "supabase:db:push": "supabase db push",
     "supabase:migration:new": "supabase migration new",
-    "tables:qr:urls": "node scripts/generate-table-qr-urls.mjs"
+    "tables:qr:urls": "node scripts/generate-table-qr-urls.mjs",
+    "orders:sessions:randomize": "node scripts/randomize-order-sessions.mjs"
   },
   "engines": {
     "node": ">=20.9.0"
