@@ -655,7 +655,7 @@ export default function Page() {
         if (state.settings) setSettings(normalizeSettings(state.settings));
         if (state.activeDrinkId) setActiveDrinkId(state.activeDrinkId);
         if (state.activeIngredientId) setActiveIngredientId(state.activeIngredientId);
-        if (state.tab) setTab(state.tab === "carta" ? "receitas" : state.tab);
+        if (state.tab) setTab(state.tab === "carta" || state.tab === "orders" ? "receitas" : state.tab);
         if (state.cartaViewMode === "cards" || state.cartaViewMode === "list") {
           setCartaViewMode(state.cartaViewMode);
         }
@@ -665,7 +665,7 @@ export default function Page() {
           settings: state.settings ?? DEFAULT_SETTINGS,
           activeDrinkId: state.activeDrinkId ?? null,
           activeIngredientId: state.activeIngredientId ?? null,
-          tab: state.tab === "carta" ? "receitas" : state.tab ?? "receitas",
+          tab: state.tab === "carta" || state.tab === "orders" ? "receitas" : state.tab ?? "receitas",
           cartaViewMode: state.cartaViewMode === "list" ? "list" : "cards",
         });
       }
@@ -782,6 +782,12 @@ export default function Page() {
       clearInterval(interval);
     };
   }, [tab, loadOrders]);
+
+  useEffect(() => {
+    if (tab === "orders") {
+      setTab("receitas");
+    }
+  }, [tab]);
 
   const moveOrderTo = useCallback(
     async (orderId: string, status: OrderStatus) => {
@@ -1288,7 +1294,9 @@ export default function Page() {
 
           <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
             <button style={topTab(tab === "receitas")} onClick={() => setTab("receitas")}>Receitas</button>
-            <button style={topTab(tab === "orders")} onClick={() => setTab("orders")}>Pedidos</button>
+            <Link href="/admin/pedidos" style={{ ...topTab(false), textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
+              Pedidos
+            </Link>
             <button style={topTab(tab === "drinks")} onClick={() => setTab("drinks")}>Drinks</button>
             <button style={topTab(tab === "ingredients")} onClick={() => setTab("ingredients")}>Ingredientes</button>
             <button style={topTab(tab === "settings")} onClick={() => setTab("settings")}>Configurações</button>

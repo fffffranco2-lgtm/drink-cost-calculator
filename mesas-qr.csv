@@ -1,7 +1,3 @@
-
-> drink-cost-calculator@0.1.0 tables:qr:urls
-> node scripts/generate-table-qr-urls.mjs --count 2 --base-url http://localhost:3000/
-
 table_code,url
-M01,https://drink-cost-calculator.vercel.app/cardapio?mesa=M01&token=e6fde74b91b106e1728a1496e2afcb5653549b22759126e6b79397d2a055ae37
-M02,https://drink-cost-calculator.vercel.app/cardapio?mesa=M02&token=693cf463f831421c3a013f4505b1f8803b659e9c3a285adb6c8a1f6df891fad5
+M01,http://localhost:3000/cardapio?mesa=M01&token=3aa66016cc3a374821c30b4a854fc8d5b6770af76f69b80e436b25afae752faf
+M02,http://localhost:3000/cardapio?mesa=M02&token=f2f5b9104b4d87f9ecc988c05609aa7988b3b6753ef93eac3c87b5fc29a03d6f

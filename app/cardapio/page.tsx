@@ -330,6 +330,12 @@ export default function PublicMenuPage() {
     const tableToken = (params.get("token") ?? params.get("t") ?? "").trim().toLowerCase().slice(0, 128);
     setQrTableCode(tableCode);
     setQrTableToken(tableToken);
+
+    // Captura o contexto da mesa e limpa a URL para não expor query no navegador.
+    if (window.location.search) {
+      const cleanPath = window.location.pathname === "/cardapio" ? "/" : window.location.pathname;
+      window.history.replaceState({}, "", cleanPath);
+    }
   }, []);
 
   useEffect(() => {
@@ -646,9 +652,9 @@ export default function PublicMenuPage() {
     ["--danger-bg" as never]: "#FBE8E5",
     ["--danger-border" as never]: "#E5B8B0",
     ["--danger-ink" as never]: "#7D2E25",
-    ["--success-bg" as never]: "#F8E9E6",
-    ["--success-border" as never]: "#E3C4BE",
-    ["--success-ink" as never]: "#7A2E26",
+    ["--success-bg" as never]: "#EAF8EE",
+    ["--success-border" as never]: "#B9E1C3",
+    ["--success-ink" as never]: "#1E5A2C",
     ["--overlay" as never]: "rgba(103, 32, 25, 0.3)",
     ["--modal-shadow" as never]: "0 24px 56px rgba(72, 22, 16, 0.28)",
   };

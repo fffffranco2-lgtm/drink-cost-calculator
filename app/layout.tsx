@@ -1,16 +1,5 @@
 import type { Metadata } from "next";
-import { JetBrains_Mono, Space_Grotesk } from "next/font/google";
 import "./globals.css";
-
-const appSans = Space_Grotesk({
-  variable: "--font-app-sans",
-  subsets: ["latin"],
-});
-
-const appMono = JetBrains_Mono({
-  variable: "--font-app-mono",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "Drink Cost Calculator",
@@ -24,9 +13,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="pt-BR">
-      <body
-        className={`${appSans.variable} ${appMono.variable} antialiased`}
-      >
+      <body className="antialiased">
         {children}
       </body>
     </html>

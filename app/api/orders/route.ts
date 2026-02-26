@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { createServerClient } from "@supabase/ssr";
 import { createHmac, timingSafeEqual } from "crypto";
 
@@ -69,9 +69,17 @@ type OrderRow = {
   status: OrderStatus;
   source?: OrderSource | null;
   table_code?: string | null;
+  session_id?: string | null;
   subtotal: number;
   created_at: string;
   updated_at: string;
+};
+
+type OrderSessionRow = {
+  id: string;
+  code: string;
+  opened_at: string;
+  closed_at: string | null;
 };
 
 type OrderItemRow = {
@@ -233,6 +241,22 @@ function makeOrderCode() {
   return `DRK-${y}${m}${d}-${rand}`;
 }
 
+async function getActiveOrderSession(supabase: SupabaseClient) {
+  const { data, error } = await supabase
+    .from("order_sessions")
+    .select("id, code, opened_at, closed_at")
+    .is("closed_at", null)
+    .order("opened_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    return { error };
+  }
+
+  return { session: (data as OrderSessionRow | null | undefined) ?? null };
+}
+
 function readCookies(request: Request) {
   const raw = request.headers.get("cookie") ?? "";
   return raw
@@ -304,10 +328,25 @@ export async function GET(request: Request) {
   const statusFilter: OrderStatus | null =
     statusParam === "pendente" || statusParam === "em_progresso" || statusParam === "concluido" ? statusParam : null;
   const since = sinceParam ? new Date(sinceParam) : null;
+  const activeSessionResult = await getActiveOrderSession(supabase);
+  if (activeSessionResult.error) {
+    return NextResponse.json({ error: "Falha ao consultar sessão atual do bar." }, { status: 500 });
+  }
+  const activeSession = activeSessionResult.session;
+
+  if (!activeSession) {
+    return NextResponse.json({
+      debugVersion: ORDERS_API_DEBUG_VERSION,
+      updatedAt: null,
+      session: { isOpen: false },
+      orders: [],
+    });
+  }
 
   let latestOrderQuery = supabase
     .from("orders")
     .select("updated_at")
+    .eq("session_id", activeSession.id)
     .order("updated_at", { ascending: false })
     .limit(1);
 
@@ -330,7 +369,8 @@ export async function GET(request: Request) {
 
   let ordersQuery = supabase
     .from("orders")
-    .select("id, code, customer_name, customer_phone, notes, status, source, table_code, subtotal, created_at, updated_at")
+    .select("id, code, customer_name, customer_phone, notes, status, source, table_code, session_id, subtotal, created_at, updated_at")
+    .eq("session_id", activeSession.id)
     .order("created_at", { ascending: false })
     .limit(200);
 
@@ -345,7 +385,8 @@ export async function GET(request: Request) {
   if (ordersError && (ordersError.message.toLowerCase().includes("source") || ordersError.message.toLowerCase().includes("table_code"))) {
     const fallback = await supabase
       .from("orders")
-      .select("id, code, customer_name, customer_phone, notes, status, subtotal, created_at, updated_at")
+      .select("id, code, customer_name, customer_phone, notes, status, session_id, subtotal, created_at, updated_at")
+      .eq("session_id", activeSession.id)
       .order("created_at", { ascending: false })
       .limit(200);
     ordersData = (fallback.data ?? null) as OrderRow[] | null;
@@ -358,7 +399,12 @@ export async function GET(request: Request) {
 
   const orders = (ordersData ?? []) as OrderRow[];
   if (!orders.length) {
-    return NextResponse.json({ orders: [], updatedAt, debugVersion: ORDERS_API_DEBUG_VERSION });
+    return NextResponse.json({
+      orders: [],
+      updatedAt,
+      debugVersion: ORDERS_API_DEBUG_VERSION,
+      session: { isOpen: true, id: activeSession.id, code: activeSession.code, openedAt: activeSession.opened_at },
+    });
   }
 
   const orderIds = orders.map((order) => order.id);
@@ -393,6 +439,7 @@ export async function GET(request: Request) {
   return NextResponse.json({
     debugVersion: ORDERS_API_DEBUG_VERSION,
     updatedAt,
+    session: { isOpen: true, id: activeSession.id, code: activeSession.code, openedAt: activeSession.opened_at },
     orders: orders.map((order) => ({
       id: order.id,
       code: order.code,
@@ -464,6 +511,14 @@ export async function POST(request: Request) {
   const supabase = createClient(url, serviceRoleKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
+  const activeSessionResult = await getActiveOrderSession(supabase);
+  if (activeSessionResult.error) {
+    return NextResponse.json({ error: "Falha ao consultar sessão atual do bar." }, { status: 500 });
+  }
+  const activeSession = activeSessionResult.session;
+  if (!activeSession) {
+    return NextResponse.json({ error: "Bar fechado no momento. Aguarde a abertura para enviar pedidos." }, { status: 403 });
+  }
 
   let statePayload: AppStatePayload | null = null;
 
@@ -562,6 +617,7 @@ export async function POST(request: Request) {
         status: "pendente",
         source: origin.source,
         table_code: origin.tableCode,
+        session_id: activeSession.id,
         subtotal,
       })
       .select("id, code, status, subtotal, created_at")
@@ -611,6 +667,7 @@ export async function POST(request: Request) {
       status: createdOrder.status,
       source: origin.source,
       tableCode: origin.tableCode,
+      sessionId: activeSession.id,
       subtotal: createdOrder.subtotal,
       createdAt: createdOrder.created_at,
     },
