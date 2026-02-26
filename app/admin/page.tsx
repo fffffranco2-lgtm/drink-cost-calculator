@@ -1297,6 +1297,9 @@ export default function Page() {
             <Link href="/admin/pedidos" style={{ ...topTab(false), textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
               Pedidos
             </Link>
+            <Link href="/admin/mesas" style={{ ...topTab(false), textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
+              Mesas
+            </Link>
             <button style={topTab(tab === "drinks")} onClick={() => setTab("drinks")}>Drinks</button>
             <button style={topTab(tab === "ingredients")} onClick={() => setTab("ingredients")}>Ingredientes</button>
             <button style={topTab(tab === "settings")} onClick={() => setTab("settings")}>Configurações</button>

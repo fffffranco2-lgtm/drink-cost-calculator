@@ -146,6 +146,9 @@ export default function OrdersHistoryPage() {
               <Link href="/admin/pedidos" style={btn}>
                 Pedidos em tempo real
               </Link>
+              <Link href="/admin/mesas" style={btn}>
+                Mesas
+              </Link>
               <Link href="/admin" style={btn}>
                 Área interna
               </Link>

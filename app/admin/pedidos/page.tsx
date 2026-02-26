@@ -745,6 +745,9 @@ export default function AdminOrdersPage() {
               <Link href="/admin" style={{ ...btn, textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
                 Área interna
               </Link>
+              <Link href="/admin/mesas" style={{ ...btn, textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
+                Mesas
+              </Link>
               <Link href="/" style={{ ...btn, textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
                 Cardápio público
               </Link>
