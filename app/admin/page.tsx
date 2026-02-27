@@ -17,6 +17,18 @@ type RecipeUnit = "ml" | "un" | "dash" | "drop";
 
 /** Como precificar um ingrediente */
 type PricingModel = "by_ml" | "by_bottle" | "by_unit";
+type IngredientCategory =
+  | "destilados_base"
+  | "fortificados"
+  | "licores"
+  | "amaros_aperitivos"
+  | "bitters"
+  | "xaropes"
+  | "citricos"
+  | "sucos"
+  | "mixers_carbonatados"
+  | "garnish"
+  | "outros";
 
 type PublicMenuDrinkPriceMode = "markup" | "cmv" | "manual";
 type PublicMenuPriceVisibility = "show" | "none";
@@ -26,9 +38,40 @@ type RecipeSortMode = "alpha_asc" | "alpha_desc" | "price_asc" | "price_desc" | 
 /** Arredondamento psicológico */
 type RoundingMode = "none" | "end_90" | "end_00" | "end_50";
 
+const INGREDIENT_CATEGORIES: IngredientCategory[] = [
+  "destilados_base",
+  "fortificados",
+  "licores",
+  "amaros_aperitivos",
+  "bitters",
+  "xaropes",
+  "citricos",
+  "sucos",
+  "mixers_carbonatados",
+  "garnish",
+  "outros",
+];
+
+const INGREDIENT_CATEGORY_LABEL: Record<IngredientCategory, string> = {
+  destilados_base: "Destilados Base",
+  fortificados: "Fortificados",
+  licores: "Licores",
+  amaros_aperitivos: "Amaros & Aperitivos",
+  sucos: "Sucos",
+  citricos: "Cítricos",
+  mixers_carbonatados: "Mixers / Carbonatados",
+  xaropes: "Xaropes",
+  bitters: "Bitters",
+  garnish: "Garnish",
+  outros: "Outros",
+};
+
+const DEFAULT_INGREDIENT_CATEGORY: IngredientCategory = "outros";
+
 type Ingredient = {
   id: string;
   name: string;
+  category: IngredientCategory;
 
   pricingModel: PricingModel;
 
@@ -70,6 +113,7 @@ type Settings = {
   dashMl: number; // ml por dash (normalmente fracionário)
   dropMl: number; // ml por gota (normalmente fracionário)
   publicMenuPriceVisibility: PublicMenuPriceVisibility;
+  showPublicMenuGarnish: boolean;
   roundingMode: RoundingMode; // arredondamento psicológico
 };
 
@@ -79,6 +123,7 @@ const DEFAULT_SETTINGS: Settings = {
   dashMl: 0.9,
   dropMl: 0.05,
   publicMenuPriceVisibility: "show",
+  showPublicMenuGarnish: true,
   roundingMode: "end_90",
 };
 
@@ -102,12 +147,112 @@ function normalizeDrink(raw: any): Drink {
 function normalizeSettings(raw: any): Settings {
   const visibility: PublicMenuPriceVisibility =
     raw?.publicMenuPriceVisibility === "none" || raw?.publicMenuPriceMode === "none" ? "none" : "show";
+  const showPublicMenuGarnish =
+    typeof raw?.showPublicMenuGarnish === "boolean"
+      ? raw.showPublicMenuGarnish
+      : typeof raw?.showPublicMenuGarnish === "string"
+      ? raw.showPublicMenuGarnish.toLowerCase() !== "false"
+      : true;
 
   return {
     ...DEFAULT_SETTINGS,
     ...raw,
     publicMenuPriceVisibility: visibility,
+    showPublicMenuGarnish,
   };
+}
+
+function toDisplayUnit(unit: RecipeUnit) {
+  return unit === "drop" ? "gota" : unit;
+}
+
+function formatQty(value: number, decimals: number) {
+  const factor = Math.pow(10, decimals);
+  const rounded = Math.round(value * factor) / factor;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(decimals).replace(/\.?0+$/, "").replace(".", ",");
+}
+
+function sortRecipeItems(
+  items: RecipeItem[],
+  ingredientMap: Map<string, Ingredient>,
+  options?: { hideGarnish?: boolean }
+) {
+  const hideGarnish = Boolean(options?.hideGarnish);
+  const filtered = hideGarnish ? items.filter((item) => ingredientMap.get(item.ingredientId)?.category !== "garnish") : items;
+
+  return [...filtered].sort((a, b) => {
+    const group = (unit: RecipeUnit) => (unit === "ml" ? 0 : unit === "dash" ? 1 : 2);
+    const groupDiff = group(a.unit) - group(b.unit);
+    if (groupDiff !== 0) return groupDiff;
+
+    if (a.qty !== b.qty) return b.qty - a.qty;
+
+    const nameA = ingredientMap.get(a.ingredientId)?.name ?? "";
+    const nameB = ingredientMap.get(b.ingredientId)?.name ?? "";
+    return nameA.localeCompare(nameB, "pt-BR");
+  });
+}
+
+function formatRecipeItemsForDisplay(
+  items: RecipeItem[],
+  ingredientMap: Map<string, Ingredient>,
+  options?: { hideGarnish?: boolean; garnishTag?: boolean }
+) {
+  const garnishTag = Boolean(options?.garnishTag);
+  return sortRecipeItems(items, ingredientMap, options).map((item) => {
+    const ingredient = ingredientMap.get(item.ingredientId);
+    const name = ingredient?.name?.trim();
+    if (!name) return null;
+
+    const unit = toDisplayUnit(item.unit);
+    const decimals = item.unit === "ml" ? 0 : 2;
+    const qty = formatQty(item.qty, decimals);
+    const garnishSuffix = garnishTag && ingredient?.category === "garnish" ? " (garnish)" : "";
+    const dashSuffix = item.qty > 1 ? "dashes" : "dash";
+    const qtyWithUnit = item.unit === "dash" ? `${qty} ${dashSuffix}` : `${qty}${unit}`;
+    return `${qtyWithUnit} ${name}${garnishSuffix}`;
+  }).filter((entry): entry is string => Boolean(entry));
+}
+
+function normalizeIngredientCategory(raw: unknown): IngredientCategory {
+  const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
+  const legacyMap: Record<string, IngredientCategory> = {
+    destilados: "destilados_base",
+    vermutes: "fortificados",
+    amaros: "amaros_aperitivos",
+  };
+  if (legacyMap[value]) return legacyMap[value];
+  return (INGREDIENT_CATEGORIES as string[]).includes(value) ? (value as IngredientCategory) : DEFAULT_INGREDIENT_CATEGORY;
+}
+
+function parseOptionalNumber(raw: unknown): number | undefined {
+  if (raw === "" || raw === null || raw === undefined) return undefined;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function normalizeIngredient(raw: any): Ingredient {
+  const pricingModel: PricingModel =
+    raw?.pricingModel === "by_ml" || raw?.pricingModel === "by_unit" ? raw.pricingModel : "by_bottle";
+
+  return {
+    id: String(raw?.id || uid("ing")),
+    name: String(raw?.name || "Ingrediente"),
+    category: normalizeIngredientCategory(raw?.category),
+    pricingModel,
+    costPerMl: parseOptionalNumber(raw?.costPerMl),
+    bottlePrice: parseOptionalNumber(raw?.bottlePrice),
+    bottleMl: parseOptionalNumber(raw?.bottleMl),
+    yieldMl: parseOptionalNumber(raw?.yieldMl),
+    lossPct: parseOptionalNumber(raw?.lossPct),
+    costPerUnit: parseOptionalNumber(raw?.costPerUnit),
+    notes: raw?.notes ? String(raw.notes) : undefined,
+  };
+}
+
+function normalizeIngredients(raw: unknown): Ingredient[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item) => normalizeIngredient(item));
 }
 
 /* ----------------------------- utils ----------------------------- */
@@ -318,6 +463,7 @@ function exportAsCsv(payload: ExportPayload) {
   const ingredientsRows = payload.ingredients.map((i) => ({
     id: i.id,
     name: i.name,
+    category: i.category,
     pricingModel: i.pricingModel,
     costPerMl: i.costPerMl ?? "",
     bottlePrice: i.bottlePrice ?? "",
@@ -361,6 +507,7 @@ function exportAsCsv(payload: ExportPayload) {
       dashMl: payload.settings.dashMl,
       dropMl: payload.settings.dropMl,
       publicMenuPriceVisibility: payload.settings.publicMenuPriceVisibility,
+      showPublicMenuGarnish: payload.settings.showPublicMenuGarnish,
       roundingMode: payload.settings.roundingMode,
     },
   ];
@@ -400,18 +547,7 @@ function parseCombinedCsv(text: string): Partial<ExportPayload> {
   const ingText = sections.get("###INGREDIENTS###");
   if (ingText) {
     const parsed = Papa.parse<any>(ingText, { header: true, skipEmptyLines: true });
-    out.ingredients = (parsed.data || []).map((r) => ({
-      id: String(r.id || uid("ing")),
-      name: String(r.name || "Ingrediente"),
-      pricingModel: (r.pricingModel as PricingModel) || "by_bottle",
-      costPerMl: r.costPerMl === "" ? undefined : Number(r.costPerMl),
-      bottlePrice: r.bottlePrice === "" ? undefined : Number(r.bottlePrice),
-      bottleMl: r.bottleMl === "" ? undefined : Number(r.bottleMl),
-      yieldMl: r.yieldMl === "" ? undefined : Number(r.yieldMl),
-      lossPct: r.lossPct === "" ? undefined : Number(r.lossPct),
-      costPerUnit: r.costPerUnit === "" ? undefined : Number(r.costPerUnit),
-      notes: r.notes ? String(r.notes) : undefined,
-    })) as Ingredient[];
+    out.ingredients = normalizeIngredients(parsed.data);
   }
 
   const drinksText = sections.get("###DRINKS###");
@@ -468,6 +604,7 @@ function parseCombinedCsv(text: string): Partial<ExportPayload> {
         dashMl: Number(r.dashMl ?? 0.9),
         dropMl: Number(r.dropMl ?? 0.05),
         publicMenuPriceVisibility: r.publicMenuPriceVisibility,
+        showPublicMenuGarnish: r.showPublicMenuGarnish,
         publicMenuPriceMode: r.publicMenuPriceMode,
         roundingMode: (r.roundingMode as RoundingMode) || "none",
       });
@@ -571,6 +708,108 @@ function compactPillStyle(active: boolean): React.CSSProperties {
   };
 }
 
+function ScrollShadow(props: {
+  axis: "x" | "y";
+  style?: React.CSSProperties;
+  children: React.ReactNode;
+}) {
+  const { axis, style, children } = props;
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [showStart, setShowStart] = useState(false);
+  const [showEnd, setShowEnd] = useState(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+
+    const update = () => {
+      if (axis === "x") {
+        const max = el.scrollWidth - el.clientWidth;
+        setShowStart(el.scrollLeft > 1);
+        setShowEnd(max - el.scrollLeft > 1);
+        return;
+      }
+
+      const max = el.scrollHeight - el.clientHeight;
+      setShowStart(el.scrollTop > 1);
+      setShowEnd(max - el.scrollTop > 1);
+    };
+
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    return () => {
+      el.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, [axis, children]);
+
+  const viewportStyle: React.CSSProperties =
+    axis === "x"
+      ? { overflowX: "auto", overflowY: "hidden", ...style }
+      : { overflowY: "auto", overflowX: "hidden", ...style };
+
+  return (
+    <div style={{ position: "relative" }}>
+      <div ref={ref} style={viewportStyle}>{children}</div>
+
+      {axis === "x" && showStart ? (
+        <div
+          style={{
+            pointerEvents: "none",
+            position: "absolute",
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: 14,
+            background: "linear-gradient(to right, rgba(255,255,255,0.95), rgba(255,255,255,0))",
+          }}
+        />
+      ) : null}
+      {axis === "x" && showEnd ? (
+        <div
+          style={{
+            pointerEvents: "none",
+            position: "absolute",
+            right: 0,
+            top: 0,
+            bottom: 0,
+            width: 14,
+            background: "linear-gradient(to left, rgba(255,255,255,0.95), rgba(255,255,255,0))",
+          }}
+        />
+      ) : null}
+
+      {axis === "y" && showStart ? (
+        <div
+          style={{
+            pointerEvents: "none",
+            position: "absolute",
+            left: 0,
+            right: 0,
+            top: 0,
+            height: 14,
+            background: "linear-gradient(to bottom, rgba(255,255,255,0.95), rgba(255,255,255,0))",
+          }}
+        />
+      ) : null}
+      {axis === "y" && showEnd ? (
+        <div
+          style={{
+            pointerEvents: "none",
+            position: "absolute",
+            left: 0,
+            right: 0,
+            bottom: 0,
+            height: 14,
+            background: "linear-gradient(to top, rgba(255,255,255,0.95), rgba(255,255,255,0))",
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
 export default function Page() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const csvInputRef = useRef<HTMLInputElement | null>(null);
@@ -586,6 +825,7 @@ export default function Page() {
   const [tab, setTab] = useState<"receitas" | "drinks" | "ingredients" | "settings" | "orders">("receitas");
   const [activeDrinkId, setActiveDrinkId] = useState<string | null>(null);
   const [activeIngredientId, setActiveIngredientId] = useState<string | null>(null);
+  const [ingredientCategoryTab, setIngredientCategoryTab] = useState<IngredientCategory>(INGREDIENT_CATEGORIES[0]);
 
   const [menuSearch, setMenuSearch] = useState("");
   const [cartaViewMode, setCartaViewMode] = useState<CartaViewMode>("cards");
@@ -665,7 +905,8 @@ export default function Page() {
 
       const state = data?.state as Partial<AppStatePayload> | undefined;
       if (state) {
-        if (state.ingredients) setIngredients(state.ingredients);
+        const normalizedIngredients = normalizeIngredients(state.ingredients);
+        if (state.ingredients) setIngredients(normalizedIngredients);
         if (state.drinks) setDrinks((state.drinks as any[]).map((d) => normalizeDrink(d)));
         if (state.settings) setSettings(normalizeSettings(state.settings));
         if (state.activeDrinkId) setActiveDrinkId(state.activeDrinkId);
@@ -675,7 +916,7 @@ export default function Page() {
           setCartaViewMode(state.cartaViewMode);
         }
         lastRemoteStateRef.current = JSON.stringify({
-          ingredients: state.ingredients ?? [],
+          ingredients: normalizedIngredients,
           drinks: state.drinks ?? [],
           settings: state.settings ?? DEFAULT_SETTINGS,
           activeDrinkId: state.activeDrinkId ?? null,
@@ -1017,14 +1258,14 @@ export default function Page() {
   useEffect(() => {
     if (hydratingRemote || ingredients.length || drinks.length) return;
 
-    const gin: Ingredient = { id: uid("ing"), name: "Gin (750ml)", pricingModel: "by_bottle", bottlePrice: 120, bottleMl: 750, yieldMl: 720, lossPct: 0 };
-    const vodka: Ingredient = { id: uid("ing"), name: "Vodka (750ml)", pricingModel: "by_bottle", bottlePrice: 95, bottleMl: 750, yieldMl: 720, lossPct: 0 };
-    const campari: Ingredient = { id: uid("ing"), name: "Campari (750ml)", pricingModel: "by_bottle", bottlePrice: 110, bottleMl: 750, yieldMl: 720, lossPct: 0 };
-    const vermuteRosso: Ingredient = { id: uid("ing"), name: "Vermute Rosso (1L)", pricingModel: "by_bottle", bottlePrice: 80, bottleMl: 1000, yieldMl: 950, lossPct: 0 };
-    const lillet: Ingredient = { id: uid("ing"), name: "Lillet Blanc (750ml)", pricingModel: "by_bottle", bottlePrice: 140, bottleMl: 750, yieldMl: 720, lossPct: 0 };
-    const angostura: Ingredient = { id: uid("ing"), name: "Angostura (bitters)", pricingModel: "by_bottle", bottlePrice: 70, bottleMl: 200, yieldMl: 190, lossPct: 0 };
-    const orangePeel: Ingredient = { id: uid("ing"), name: "Casca de laranja (garnish)", pricingModel: "by_unit", costPerUnit: 0.4 };
-    const lemonPeel: Ingredient = { id: uid("ing"), name: "Casca de limão (garnish)", pricingModel: "by_unit", costPerUnit: 0.35 };
+    const gin: Ingredient = { id: uid("ing"), name: "Gin (750ml)", category: "destilados_base", pricingModel: "by_bottle", bottlePrice: 120, bottleMl: 750, yieldMl: 720, lossPct: 0 };
+    const vodka: Ingredient = { id: uid("ing"), name: "Vodka (750ml)", category: "destilados_base", pricingModel: "by_bottle", bottlePrice: 95, bottleMl: 750, yieldMl: 720, lossPct: 0 };
+    const campari: Ingredient = { id: uid("ing"), name: "Campari (750ml)", category: "amaros_aperitivos", pricingModel: "by_bottle", bottlePrice: 110, bottleMl: 750, yieldMl: 720, lossPct: 0 };
+    const vermuteRosso: Ingredient = { id: uid("ing"), name: "Vermute Rosso (1L)", category: "fortificados", pricingModel: "by_bottle", bottlePrice: 80, bottleMl: 1000, yieldMl: 950, lossPct: 0 };
+    const lillet: Ingredient = { id: uid("ing"), name: "Lillet Blanc (750ml)", category: "fortificados", pricingModel: "by_bottle", bottlePrice: 140, bottleMl: 750, yieldMl: 720, lossPct: 0 };
+    const angostura: Ingredient = { id: uid("ing"), name: "Angostura (bitters)", category: "bitters", pricingModel: "by_bottle", bottlePrice: 70, bottleMl: 200, yieldMl: 190, lossPct: 0 };
+    const orangePeel: Ingredient = { id: uid("ing"), name: "Casca de laranja (garnish)", category: "garnish", pricingModel: "by_unit", costPerUnit: 0.4 };
+    const lemonPeel: Ingredient = { id: uid("ing"), name: "Casca de limão (garnish)", category: "garnish", pricingModel: "by_unit", costPerUnit: 0.35 };
 
     const hanky: Drink = {
       id: uid("drink"),
@@ -1121,11 +1362,33 @@ export default function Page() {
     [ingredients, activeIngredientId]
   );
 
+  const ingredientGroups = useMemo(
+    () =>
+      INGREDIENT_CATEGORIES.map((category) => ({
+        category,
+        items: ingredients.filter((i) => i.category === category),
+      })).filter((group) => group.items.length > 0),
+    [ingredients]
+  );
+
+  const activeCategoryIngredients = useMemo(
+    () => ingredients.filter((i) => i.category === ingredientCategoryTab),
+    [ingredients, ingredientCategoryTab]
+  );
+
+  useEffect(() => {
+    if (!ingredients.length) return;
+    if (activeIngredientId && ingredients.some((i) => i.id === activeIngredientId && i.category === ingredientCategoryTab)) return;
+    const firstInCategory = ingredients.find((i) => i.category === ingredientCategoryTab);
+    if (firstInCategory) setActiveIngredientId(firstInCategory.id);
+  }, [ingredients, activeIngredientId, ingredientCategoryTab]);
+
   // CRUD
   const addIngredient = () => {
     const ing: Ingredient = {
       id: uid("ing"),
       name: "Novo ingrediente",
+      category: ingredientCategoryTab,
       pricingModel: "by_bottle",
       bottlePrice: 0,
       bottleMl: 750,
@@ -1255,12 +1518,13 @@ export default function Page() {
       try {
         const text = String(reader.result || "");
         const data = parseCombinedCsv(text);
+        const normalizedIngredients = normalizeIngredients(data.ingredients);
 
-        if (data.ingredients) setIngredients(data.ingredients);
+        if (data.ingredients) setIngredients(normalizedIngredients);
         if (data.drinks) setDrinks(data.drinks);
         if (data.settings) setSettings(data.settings);
 
-        if (data.ingredients) setActiveIngredientId(data.ingredients[0]?.id ?? null);
+        if (data.ingredients) setActiveIngredientId(normalizedIngredients[0]?.id ?? null);
         if (data.drinks) setActiveDrinkId(data.drinks[0]?.id ?? null);
       } catch {
         alert("Falha ao importar CSV. Verifique o formato do arquivo.");
@@ -1326,6 +1590,27 @@ export default function Page() {
     borderColor: "var(--dangerBorder)",
   };
 
+  const iconBtn: React.CSSProperties = {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    border: "1px solid var(--border)",
+    background: "var(--btn)",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+    fontSize: FONT_SCALE.md,
+    fontWeight: 700,
+    lineHeight: 1,
+  };
+
+  const iconBtnDanger: React.CSSProperties = {
+    ...iconBtn,
+    background: "var(--danger)",
+    borderColor: "var(--dangerBorder)",
+  };
+
   const input: React.CSSProperties = {
     width: "100%",
     padding: 12,
@@ -1340,6 +1625,28 @@ export default function Page() {
   const topTab = (active: boolean): React.CSSProperties => ({
     ...btn,
     background: active ? "var(--pillActive)" : "var(--pill)",
+  });
+
+  const categoryButtonStyle = (active: boolean, isAdd = false): React.CSSProperties => ({
+    border: "1px solid var(--border)",
+    background: active ? "var(--pillActive)" : "var(--pill)",
+    borderRadius: 12,
+    padding: isAdd ? "8px 10px" : "8px 16px",
+    fontSize: FONT_SCALE.sm,
+    fontWeight: 700,
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+    textAlign: "center",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+  });
+
+  const ingredientButtonStyle = (active: boolean): React.CSSProperties => ({
+    ...pillStyle(active),
+    borderRadius: 12,
+    fontSize: FONT_SCALE.sm,
+    fontWeight: 600,
   });
 
   const focusStyle = `
@@ -1388,24 +1695,16 @@ export default function Page() {
 
   const cartaRows = useMemo(() => {
     const q = menuSearch.trim().toLowerCase();
-    const rows = [...drinks]
-      .filter((d) => (q ? d.name.toLowerCase().includes(q) : true))
-      .map((d) => {
+    const rows = [...drinks].map((d) => {
         const nameWidthCh = Math.max(10, Math.min(22, d.name.trim().length + 2));
-        const ingredientNames = Array.from(
-          new Set(
-            d.items
-              .map((item) => ingredientMap.get(item.ingredientId)?.name?.trim())
-              .filter((name): name is string => Boolean(name))
-          )
-        );
+        const ingredientLines = formatRecipeItemsForDisplay(d.items, ingredientMap);
 
         return {
           d,
           cost: computedByDrinkId.get(d.id)?.cost ?? 0,
           prices: getFinalPriceForDrink(d.id),
           publicPrice: getPublicMenuPriceForDrink(d),
-          ingredientNames,
+          ingredientLines,
           nameWidthCh,
         };
       });
@@ -1429,7 +1728,9 @@ export default function Page() {
       return a.d.name.localeCompare(b.d.name, "pt-BR");
     });
 
-    return rows;
+    return rows.filter(({ d, ingredientLines }) =>
+      q ? d.name.toLowerCase().includes(q) || ingredientLines.some((line) => line.toLowerCase().includes(q)) : true
+    );
   }, [drinks, menuSearch, computedByDrinkId, ingredientMap, settings.roundingMode, settings.markup, settings.targetCmv, recipeSortMode]);
 
   const groupedOrders = useMemo(
@@ -1495,26 +1796,31 @@ export default function Page() {
             </div>
 
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-              <Link href="/" style={{ ...btn, textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
-                Cardápio público
-              </Link>
               <button style={btn} onClick={logout}>
                 Sair
               </button>
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-            <button style={topTab(tab === "receitas")} onClick={() => setTab("receitas")}>Receitas</button>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <Link
+                href="/"
+                target="_blank"
+                rel="noreferrer"
+                style={{ ...topTab(false), textDecoration: "none", display: "inline-flex", alignItems: "center" }}
+              >
+                Cardápio Público
+              </Link>
+              <button style={topTab(tab === "receitas")} onClick={() => setTab("receitas")}>Resumo</button>
+              <button style={topTab(tab === "drinks")} onClick={() => setTab("drinks")}>Drinks</button>
+              <button style={topTab(tab === "ingredients")} onClick={() => setTab("ingredients")}>Ingredientes</button>
+              <button style={topTab(tab === "settings")} onClick={() => setTab("settings")}>Configurações</button>
+            </div>
+
             <Link href="/admin/pedidos" style={{ ...topTab(false), textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
               Pedidos
             </Link>
-            <Link href="/admin/mesas" style={{ ...topTab(false), textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
-              Mesas
-            </Link>
-            <button style={topTab(tab === "drinks")} onClick={() => setTab("drinks")}>Drinks</button>
-            <button style={topTab(tab === "ingredients")} onClick={() => setTab("ingredients")}>Ingredientes</button>
-            <button style={topTab(tab === "settings")} onClick={() => setTab("settings")}>Configurações</button>
           </div>
         </div>
 
@@ -1522,7 +1828,7 @@ export default function Page() {
         {tab === "receitas" && (
           <div style={card}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-              <h2 style={{ marginTop: 0, fontSize: FONT_SCALE.lg, marginBottom: 10 }}>Receitas</h2>
+              <h2 style={{ marginTop: 0, fontSize: FONT_SCALE.lg, marginBottom: 10 }}>Resumo</h2>
               <div style={small}>
                 Arredondamento: {settings.roundingMode === "none" ? "Nenhum" : settings.roundingMode === "end_90" ? ",90" : settings.roundingMode === "end_00" ? ",00" : ",50"}
               </div>
@@ -1537,7 +1843,7 @@ export default function Page() {
 
             <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <div style={small}>Visualização das Receitas</div>
+                <div style={small}>Visualização do Resumo</div>
                 <div style={{ display: "flex", gap: 8 }}>
                   <div style={pillStyle(cartaViewMode === "cards")} onClick={() => setCartaViewMode("cards")}>
                     Cards
@@ -1572,7 +1878,7 @@ export default function Page() {
                   : { marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }
               }
             >
-              {cartaRows.map(({ d, prices, publicPrice, ingredientNames, nameWidthCh }) =>
+              {cartaRows.map(({ d, prices, publicPrice, ingredientLines, nameWidthCh }) =>
                 cartaViewMode === "cards" ? (
                   <div
                     key={d.id}
@@ -1695,7 +2001,7 @@ export default function Page() {
                             width: `min(${nameWidthCh * 2}ch, 100%)`,
                           }}
                         >
-                          {ingredientNames.length ? ingredientNames.join(" • ") : "Sem ingredientes"}
+                          {ingredientLines.length ? ingredientLines.join(" • ") : "Sem ingredientes"}
                         </div>
                         {d.notes ? <div style={{ ...small, fontSize: FONT_SCALE.sm }}>{d.notes}</div> : null}
                       </div>
@@ -1823,7 +2129,8 @@ export default function Page() {
                     <div style={small}>{groupedOrders[statusKey].length}</div>
                   </div>
 
-                  <div
+                  <ScrollShadow
+                    axis="y"
                     style={{
                       display: "flex",
                       flexDirection: "column",
@@ -1901,14 +2208,26 @@ export default function Page() {
                               {statusKey === "em_progresso" || statusKey === "concluido" ? (
                                 <button
                                   aria-label="Mover para a esquerda"
-                                  style={{ ...btn, ...statusButtonStyle, width: 34, height: 34, padding: 0, borderRadius: 999, fontSize: FONT_SCALE.lg, lineHeight: 1 }}
+                                  style={{
+                                    ...btn,
+                                    ...statusButtonStyle,
+                                    width: 34,
+                                    height: 34,
+                                    padding: 0,
+                                    borderRadius: 999,
+                                    fontSize: FONT_SCALE.lg,
+                                    lineHeight: 1,
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                  }}
                                   disabled={updatingOrderId === order.id}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     void moveOrderTo(order.id, "em_progresso" === statusKey ? "pendente" : "em_progresso");
                                   }}
                                 >
-                                  ←
+                                  <span className="material-symbols-rounded" aria-hidden>chevron_left</span>
                                 </button>
                               ) : (
                                 <div />
@@ -1919,14 +2238,26 @@ export default function Page() {
                               {statusKey === "pendente" || statusKey === "em_progresso" ? (
                                 <button
                                   aria-label="Mover para a direita"
-                                  style={{ ...btn, ...statusButtonStyle, width: 34, height: 34, padding: 0, borderRadius: 999, fontSize: FONT_SCALE.lg, lineHeight: 1 }}
+                                  style={{
+                                    ...btn,
+                                    ...statusButtonStyle,
+                                    width: 34,
+                                    height: 34,
+                                    padding: 0,
+                                    borderRadius: 999,
+                                    fontSize: FONT_SCALE.lg,
+                                    lineHeight: 1,
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                  }}
                                   disabled={updatingOrderId === order.id}
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     void moveOrderTo(order.id, statusKey === "pendente" ? "em_progresso" : "concluido");
                                   }}
                                 >
-                                  →
+                                  <span className="material-symbols-rounded" aria-hidden>chevron_right</span>
                                 </button>
                               ) : (
                                 <div />
@@ -1942,7 +2273,7 @@ export default function Page() {
                         Sem pedidos nesta coluna.
                       </div>
                     )}
-                  </div>
+                  </ScrollShadow>
                 </div>
               ))}
             </div>
@@ -2020,7 +2351,18 @@ export default function Page() {
                 </div>
 
                 <div style={{ marginTop: 12 }}>
-                  <div style={{ ...small, marginBottom: 6 }}>Arredondamento psicológico (Receitas e preços)</div>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <input
+                      type="checkbox"
+                      checked={settings.showPublicMenuGarnish}
+                      onChange={(e) => setSettings((s) => ({ ...s, showPublicMenuGarnish: e.target.checked }))}
+                    />
+                    <span style={small}>Exibir ingredientes da categoria Garnish no cardápio público</span>
+                  </label>
+                </div>
+
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ ...small, marginBottom: 6 }}>Arredondamento psicológico (Resumo e preços)</div>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     <div style={pillStyle(settings.roundingMode === "none")} onClick={() => setSettings((s) => ({ ...s, roundingMode: "none" }))}>Nenhum</div>
                     <div style={pillStyle(settings.roundingMode === "end_90")} onClick={() => setSettings((s) => ({ ...s, roundingMode: "end_90" }))}>Terminar em ,90</div>
@@ -2148,13 +2490,13 @@ export default function Page() {
               </div>
             ) : (
               <>
-                <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 6, marginBottom: 10 }}>
+                <ScrollShadow axis="x" style={{ display: "flex", gap: 8, paddingBottom: 6, marginBottom: 10 }}>
                   {drinks.map((d) => (
                     <div key={d.id} style={pillStyle(d.id === activeDrinkId)} onClick={() => setActiveDrinkId(d.id)}>
                       {d.name || "Sem nome"}
                     </div>
                   ))}
-                </div>
+                </ScrollShadow>
 
                 {activeDrink && (
                   <div style={{ background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: 16, padding: 12 }}>
@@ -2275,16 +2617,25 @@ export default function Page() {
                       <strong style={{ fontSize: FONT_SCALE.md }}>Receita</strong>
                       <div style={{ display: "flex", gap: 8 }}>
                         <button style={btn} onClick={() => addItemToDrink(activeDrink.id)} disabled={!ingredients.length}>+ Item</button>
-                        <button style={btn} onClick={() => duplicateDrink(activeDrink.id)}>Duplicar drink</button>
                         <button
-                          style={btnDanger}
+                          style={iconBtn}
+                          onClick={() => duplicateDrink(activeDrink.id)}
+                          aria-label="Duplicar drink"
+                          title="Duplicar drink"
+                        >
+                          <span className="material-symbols-rounded" aria-hidden>content_copy</span>
+                        </button>
+                        <button
+                          style={iconBtnDanger}
                           onClick={() => {
                             const shouldRemove = confirm(`Remover o drink "${activeDrink.name || "Sem nome"}"?`);
                             if (!shouldRemove) return;
                             removeDrink(activeDrink.id);
                           }}
+                          aria-label="Remover drink"
+                          title="Remover drink"
                         >
-                          Remover drink
+                          <span className="material-symbols-rounded" aria-hidden>delete</span>
                         </button>
                       </div>
                     </div>
@@ -2299,13 +2650,21 @@ export default function Page() {
                           const ing = ingredientMap.get(it.ingredientId);
                           const cpm = ing ? computeCostPerMl(ing) : null;
                           const perUnit = ing?.pricingModel === "by_unit" ? (ing.costPerUnit ?? 0) : 0;
-                          const hint = it.unit === "un" ? `${formatBRL(perUnit)} / un` : `${formatBRL(cpm ?? 0)} / ml`;
+                          const categoryLabel = ing ? INGREDIENT_CATEGORY_LABEL[ing.category] : "Sem categoria";
+                          const unitHint = it.unit === "un" ? `${formatBRL(perUnit)} / un` : `${formatBRL(cpm ?? 0)} / ml`;
+                          const hint = `${categoryLabel} • ${unitHint}`;
 
                           return (
                             <div className="recipe-item-row" key={`${activeDrink.id}_${idx}`} style={{ display: "grid", gridTemplateColumns: "2fr 0.8fr 0.9fr 1fr 0.8fr", gap: 8, alignItems: "center" }}>
                               <select style={input} value={it.ingredientId} onChange={(e) => updateItem(activeDrink.id, idx, { ingredientId: e.target.value })}>
-                                {ingredients.map((i) => (
-                                  <option key={i.id} value={i.id}>{i.name}</option>
+                                {ingredientGroups.map((group) => (
+                                  <optgroup key={group.category} label={INGREDIENT_CATEGORY_LABEL[group.category]}>
+                                    {group.items.map((i) => (
+                                      <option key={i.id} value={i.id}>
+                                        {i.name} ({INGREDIENT_CATEGORY_LABEL[i.category]})
+                                      </option>
+                                    ))}
+                                  </optgroup>
                                 ))}
                               </select>
 
@@ -2355,33 +2714,73 @@ export default function Page() {
               <h2 style={{ marginTop: 0, fontSize: FONT_SCALE.lg, marginBottom: 10 }}>Ingredientes</h2>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <div style={small}>{ingredients.length} ingrediente(s)</div>
-                <button style={btn} onClick={addIngredient}>+ Ingrediente</button>
               </div>
             </div>
 
+            <ScrollShadow axis="x" style={{ display: "flex", gap: 8, paddingBottom: 6, marginBottom: 10 }}>
+              {INGREDIENT_CATEGORIES.map((category) => {
+                const count = ingredients.filter((i) => i.category === category).length;
+                return (
+                  <div
+                    key={category}
+                    style={categoryButtonStyle(category === ingredientCategoryTab)}
+                    onClick={() => setIngredientCategoryTab(category)}
+                  >
+                    {INGREDIENT_CATEGORY_LABEL[category]} ({count})
+                  </div>
+                );
+              })}
+            </ScrollShadow>
+
             {ingredients.length === 0 ? (
               <div style={{ padding: 14, border: "1px dashed var(--border)", borderRadius: 14, color: "var(--muted)" }}>
-                Sem ingredientes. Clique em “+ Ingrediente”.
+                Sem ingredientes. Clique no “+” para criar.
               </div>
             ) : (
               <>
-                <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 6, marginBottom: 10 }}>
-                  {ingredients.map((i) => (
-                    <div key={i.id} style={pillStyle(i.id === activeIngredientId)} onClick={() => setActiveIngredientId(i.id)}>
+                <ScrollShadow axis="x" style={{ display: "flex", gap: 8, paddingBottom: 6, marginBottom: 10 }}>
+                  <div
+                    style={{ ...ingredientButtonStyle(false), display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+                    onClick={addIngredient}
+                    aria-label="Adicionar ingrediente"
+                  >
+                    <span className="material-symbols-rounded" style={{ fontSize: 16 }} aria-hidden>add</span>
+                  </div>
+                  {activeCategoryIngredients.map((i) => (
+                    <div key={i.id} style={ingredientButtonStyle(i.id === activeIngredientId)} onClick={() => setActiveIngredientId(i.id)}>
                       {i.name || "Sem nome"}
                     </div>
                   ))}
-                </div>
+                  {activeCategoryIngredients.length === 0 && (
+                    <div style={{ ...small, padding: "8px 2px" }}>
+                      Nenhum ingrediente nesta categoria.
+                    </div>
+                  )}
+                </ScrollShadow>
 
-                {activeIngredient && (
+                {activeIngredient && activeIngredient.category === ingredientCategoryTab && (
                   <div style={{ background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: 16, padding: 12 }}>
-                    <div className="ingredient-main-grid" style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 10 }}>
+                    <div className="ingredient-main-grid" style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 10 }}>
                       <input
                         style={input}
                         value={activeIngredient.name}
                         onChange={(e) => updateIngredient(activeIngredient.id, { name: e.target.value })}
                         placeholder="Nome do ingrediente"
                       />
+
+                      <select
+                        style={input}
+                        value={activeIngredient.category}
+                        onChange={(e) => {
+                          const nextCategory = e.target.value as IngredientCategory;
+                          setIngredientCategoryTab(nextCategory);
+                          updateIngredient(activeIngredient.id, { category: nextCategory });
+                        }}
+                      >
+                        {INGREDIENT_CATEGORIES.map((category) => (
+                          <option key={category} value={category}>{INGREDIENT_CATEGORY_LABEL[category]}</option>
+                        ))}
+                      </select>
 
                       <select
                         style={input}
@@ -2494,8 +2893,26 @@ export default function Page() {
                     </div>
 
                     <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
-                      <button style={btn} onClick={() => duplicateIngredient(activeIngredient.id)}>Duplicar ingrediente</button>
-                      <button style={btnDanger} onClick={() => removeIngredient(activeIngredient.id)}>Remover ingrediente</button>
+                      <button
+                        style={iconBtn}
+                        onClick={() => duplicateIngredient(activeIngredient.id)}
+                        aria-label="Duplicar ingrediente"
+                        title="Duplicar ingrediente"
+                      >
+                        <span className="material-symbols-rounded" aria-hidden>content_copy</span>
+                      </button>
+                      <button
+                        style={iconBtnDanger}
+                        onClick={() => {
+                          const shouldRemove = confirm(`Remover o ingrediente "${activeIngredient.name || "Sem nome"}"?`);
+                          if (!shouldRemove) return;
+                          removeIngredient(activeIngredient.id);
+                        }}
+                        aria-label="Remover ingrediente"
+                        title="Remover ingrediente"
+                      >
+                        <span className="material-symbols-rounded" aria-hidden>delete</span>
+                      </button>
                     </div>
                   </div>
                 )}
