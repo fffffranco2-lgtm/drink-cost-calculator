@@ -3,7 +3,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
 import {
   PRINT_MODE_STORAGE_KEY,
   QZ_PRINTER_STORAGE_KEY,
@@ -573,7 +572,6 @@ function compactPillStyle(active: boolean): React.CSSProperties {
 }
 
 export default function Page() {
-  const searchParams = useSearchParams();
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const csvInputRef = useRef<HTMLInputElement | null>(null);
   const lastRemoteStateRef = useRef<string>("");
@@ -1471,17 +1469,17 @@ export default function Page() {
   }, [tab, groupedOrders, expandedCompletedOrders, ordersLoading, ordersError]);
 
   useEffect(() => {
-    if (hydratingRemote) return;
-    const tabParam = searchParams.get("tab");
-    const settingsTabParam = searchParams.get("settingsTab");
+    if (hydratingRemote || typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const tabParam = params.get("tab");
+    const settingsTabParam = params.get("settingsTab");
 
-    if (tabParam === "settings") {
-      setTab("settings");
-      if (settingsTabParam === "impressao" || settingsTabParam === "geral") {
-        setSettingsTab(settingsTabParam);
-      }
+    if (tabParam !== "settings") return;
+    setTab("settings");
+    if (settingsTabParam === "impressao" || settingsTabParam === "geral") {
+      setSettingsTab(settingsTabParam);
     }
-  }, [searchParams, hydratingRemote]);
+  }, [hydratingRemote]);
 
   return (
     <div style={page}>
