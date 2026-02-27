@@ -3,6 +3,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import {
+  PRINT_MODE_STORAGE_KEY,
+  QZ_PRINTER_STORAGE_KEY,
+  type PrintMode,
+  type QzApi,
+  type QzConnectionState,
+} from "@/lib/qz-tray";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 /** Unidades que a receita pode usar */
@@ -565,6 +573,7 @@ function compactPillStyle(active: boolean): React.CSSProperties {
 }
 
 export default function Page() {
+  const searchParams = useSearchParams();
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const csvInputRef = useRef<HTMLInputElement | null>(null);
   const lastRemoteStateRef = useRef<string>("");
@@ -592,6 +601,14 @@ export default function Page() {
   const pendingBucketRef = useRef<HTMLDivElement | null>(null);
   const inProgressBucketRef = useRef<HTMLDivElement | null>(null);
   const [completedBucketMaxHeight, setCompletedBucketMaxHeight] = useState<number | null>(null);
+  const [settingsTab, setSettingsTab] = useState<"geral" | "impressao">("geral");
+  const [printMode, setPrintMode] = useState<PrintMode>("qz");
+  const [qzPrinterName, setQzPrinterName] = useState("");
+  const [qzBusy, setQzBusy] = useState(false);
+  const [qzError, setQzError] = useState("");
+  const [qzConnectionState, setQzConnectionState] = useState<QzConnectionState>("disconnected");
+  const qzLoaderRef = useRef<Promise<QzApi> | null>(null);
+  const qzSecurityReadyRef = useRef(false);
 
   const remoteState: AppStatePayload = useMemo(
     () => ({
@@ -718,6 +735,190 @@ export default function Page() {
 
     return () => clearTimeout(timeout);
   }, [hydratingRemote, localStateJson]);
+
+  const loadQz = useCallback(async () => {
+    if (window.qz) return window.qz;
+    if (qzLoaderRef.current) return qzLoaderRef.current;
+
+    qzLoaderRef.current = new Promise<QzApi>((resolve, reject) => {
+      const scriptSources = [
+        "https://cdn.jsdelivr.net/npm/qz-tray@2.2.5/qz-tray.js",
+        "https://unpkg.com/qz-tray@2.2.5/qz-tray.js",
+        "https://localhost:8181/qz-tray.js",
+        "http://localhost:8181/qz-tray.js",
+        "https://localhost:8182/qz-tray.js",
+        "http://localhost:8182/qz-tray.js",
+      ];
+
+      const tryLoad = (index: number) => {
+        if (window.qz) {
+          resolve(window.qz);
+          return;
+        }
+        if (index >= scriptSources.length) {
+          reject(new Error("Não foi possível carregar qz-tray.js (CDN e localhost 8181/8182)."));
+          return;
+        }
+
+        const script = document.createElement("script");
+        script.src = scriptSources[index];
+        script.async = true;
+        script.onload = () => {
+          if (window.qz) {
+            resolve(window.qz);
+          } else {
+            tryLoad(index + 1);
+          }
+        };
+        script.onerror = () => {
+          script.remove();
+          tryLoad(index + 1);
+        };
+        document.head.appendChild(script);
+      };
+
+      tryLoad(0);
+    });
+
+    try {
+      return await qzLoaderRef.current;
+    } catch (error) {
+      qzLoaderRef.current = null;
+      throw error;
+    }
+  }, []);
+
+  const configureQzSecurity = useCallback(async (qz: QzApi) => {
+    if (qzSecurityReadyRef.current) return;
+    if (!qz.security?.setCertificatePromise || !qz.security?.setSignaturePromise) {
+      throw new Error("API de segurança do QZ Tray indisponível.");
+    }
+
+    const certRes = await fetch("/api/qz/certificate", { cache: "no-store" });
+    const certText = await certRes.text();
+    if (!certRes.ok) {
+      throw new Error(certText || "Falha ao carregar certificado QZ.");
+    }
+
+    const certificate = certText.trim();
+    if (!certificate) {
+      throw new Error("Certificado QZ vazio.");
+    }
+
+    qz.security.setSignatureAlgorithm?.("SHA512");
+    qz.security.setCertificatePromise((resolve) => resolve(certificate));
+    qz.security.setSignaturePromise(async (toSign) => {
+      const signRes = await fetch("/api/qz/sign", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toSign }),
+      });
+      const payload = (await signRes.json()) as { signature?: string; error?: string };
+      if (!signRes.ok || !payload.signature) {
+        throw new Error(payload.error ?? "Falha ao assinar requisição QZ.");
+      }
+      return payload.signature;
+    });
+
+    qzSecurityReadyRef.current = true;
+  }, []);
+
+  const refreshQzWindowConnection = useCallback(() => {
+    try {
+      setQzConnectionState(window.qz?.websocket.isActive() ? "connected" : "disconnected");
+    } catch {
+      setQzConnectionState("disconnected");
+    }
+  }, []);
+
+  const connectQz = useCallback(async () => {
+    setQzBusy(true);
+    setQzError("");
+    try {
+      const qz = await loadQz();
+      await configureQzSecurity(qz);
+      if (!qz.websocket.isActive()) {
+        await qz.websocket.connect({ retries: 2, delay: 1 });
+      }
+      setQzConnectionState("connected");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Falha ao conectar com QZ Tray.";
+      setQzError(`${message} Inicie o QZ Tray e permita a conexão do site.`);
+      setQzConnectionState("disconnected");
+    } finally {
+      setQzBusy(false);
+    }
+  }, [configureQzSecurity, loadQz]);
+
+  const printTestViaQz = useCallback(async () => {
+    setQzBusy(true);
+    setQzError("");
+    try {
+      const qz = await loadQz();
+      await configureQzSecurity(qz);
+      if (!qz.websocket.isActive()) {
+        await qz.websocket.connect({ retries: 2, delay: 1 });
+      }
+      const typedName = qzPrinterName.trim();
+      const discovered = await qz.printers.find(typedName || undefined);
+      const printerName = typeof discovered === "string" ? discovered : discovered[0] ?? "";
+      const resolved = printerName.trim();
+      if (!resolved) {
+        throw new Error("Nenhuma impressora encontrada pelo QZ Tray.");
+      }
+      const config = qz.configs.create(resolved, { encoding: "ISO-8859-1", copies: 1 });
+      const sample = "=== TESTE QZ ===\nConexao OK\n\n\n";
+      try {
+        await qz.print(config, [{ type: "raw", format: "command", flavor: "plain", data: sample }]);
+      } catch {
+        await qz.print(config, [{ type: "raw", format: "plain", data: sample }]);
+      }
+      setQzConnectionState("connected");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Falha ao testar impressão via QZ Tray.";
+      setQzError(message);
+      setQzConnectionState("disconnected");
+    } finally {
+      setQzBusy(false);
+    }
+  }, [configureQzSecurity, loadQz, qzPrinterName]);
+
+  useEffect(() => {
+    try {
+      const savedMode = localStorage.getItem(PRINT_MODE_STORAGE_KEY);
+      if (savedMode === "qz" || savedMode === "browser") {
+        setPrintMode(savedMode);
+      }
+      const savedPrinter = localStorage.getItem(QZ_PRINTER_STORAGE_KEY);
+      if (savedPrinter) {
+        setQzPrinterName(savedPrinter);
+      }
+    } catch {
+      // ignorar indisponibilidade de storage
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(PRINT_MODE_STORAGE_KEY, printMode);
+    } catch {
+      // ignorar indisponibilidade de storage
+    }
+  }, [printMode]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(QZ_PRINTER_STORAGE_KEY, qzPrinterName);
+    } catch {
+      // ignorar indisponibilidade de storage
+    }
+  }, [qzPrinterName]);
+
+  useEffect(() => {
+    refreshQzWindowConnection();
+    const interval = window.setInterval(refreshQzWindowConnection, 2000);
+    return () => window.clearInterval(interval);
+  }, [refreshQzWindowConnection]);
 
   const loadOrders = useCallback(async (options?: { background?: boolean }) => {
     const background = Boolean(options?.background);
@@ -1269,6 +1470,19 @@ export default function Page() {
     return () => window.removeEventListener("resize", updateCompletedBucketMaxHeight);
   }, [tab, groupedOrders, expandedCompletedOrders, ordersLoading, ordersError]);
 
+  useEffect(() => {
+    if (hydratingRemote) return;
+    const tabParam = searchParams.get("tab");
+    const settingsTabParam = searchParams.get("settingsTab");
+
+    if (tabParam === "settings") {
+      setTab("settings");
+      if (settingsTabParam === "impressao" || settingsTabParam === "geral") {
+        setSettingsTab(settingsTabParam);
+      }
+    }
+  }, [searchParams, hydratingRemote]);
+
   return (
     <div style={page}>
       <style>{focusStyle}</style>
@@ -1741,123 +1955,181 @@ export default function Page() {
         {tab === "settings" && (
           <div style={card}>
             <h2 style={{ marginTop: 0, fontSize: FONT_SCALE.lg }}>Configurações</h2>
-
-            <div className="settings-grid" style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
-              <div>
-                <div style={small}>Markup (x)</div>
-                <NumberField
-                  style={input}
-                  value={settings.markup}
-                  decimals={2} // preço/regra: 2 casas para valores monetários; markup pode ser fracionário
-                  min={0}
-                  max={100}
-                  onCommit={(n) => setSettings((s) => ({ ...s, markup: n }))}
-                />
-              </div>
-
-              <div>
-                <div style={small}>CMV alvo (%)</div>
-                <NumberField
-                  style={input}
-                  value={Math.round(settings.targetCmv * 100)}
-                  decimals={0} // percentual inteiro
-                  min={1}
-                  max={100}
-                  inputMode="numeric"
-                  onCommit={(n) => setSettings((s) => ({ ...s, targetCmv: clamp(n, 1, 100) / 100 }))}
-                />
-              </div>
-
-              <div>
-                <div style={small}>1 dash = (ml)</div>
-                <NumberField
-                  style={input}
-                  value={settings.dashMl}
-                  decimals={2}
-                  min={0}
-                  max={10}
-                  onCommit={(n) => setSettings((s) => ({ ...s, dashMl: n }))}
-                />
-              </div>
-
-              <div>
-                <div style={small}>1 gota = (ml)</div>
-                <NumberField
-                  style={input}
-                  value={settings.dropMl}
-                  decimals={2}
-                  min={0}
-                  max={1}
-                  onCommit={(n) => setSettings((s) => ({ ...s, dropMl: n }))}
-                />
-              </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+              <button style={pillStyle(settingsTab === "geral")} onClick={() => setSettingsTab("geral")}>Geral</button>
+              <button style={pillStyle(settingsTab === "impressao")} onClick={() => setSettingsTab("impressao")}>Impressão</button>
             </div>
 
-            <div style={{ marginTop: 12 }}>
-              <div style={{ ...small, marginBottom: 6 }}>Exibir preço (cardápio público)</div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <div style={pillStyle(settings.publicMenuPriceVisibility === "show")} onClick={() => setSettings((s) => ({ ...s, publicMenuPriceVisibility: "show" }))}>Mostrar</div>
-                <div style={pillStyle(settings.publicMenuPriceVisibility === "none")} onClick={() => setSettings((s) => ({ ...s, publicMenuPriceVisibility: "none" }))}>Ocultar</div>
-              </div>
-            </div>
+            {settingsTab === "geral" && (
+              <>
+                <div className="settings-grid" style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
+                  <div>
+                    <div style={small}>Markup (x)</div>
+                    <NumberField
+                      style={input}
+                      value={settings.markup}
+                      decimals={2} // preço/regra: 2 casas para valores monetários; markup pode ser fracionário
+                      min={0}
+                      max={100}
+                      onCommit={(n) => setSettings((s) => ({ ...s, markup: n }))}
+                    />
+                  </div>
 
-            <div style={{ marginTop: 12 }}>
-              <div style={{ ...small, marginBottom: 6 }}>Arredondamento psicológico (Receitas e preços)</div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <div style={pillStyle(settings.roundingMode === "none")} onClick={() => setSettings((s) => ({ ...s, roundingMode: "none" }))}>Nenhum</div>
-                <div style={pillStyle(settings.roundingMode === "end_90")} onClick={() => setSettings((s) => ({ ...s, roundingMode: "end_90" }))}>Terminar em ,90</div>
-                <div style={pillStyle(settings.roundingMode === "end_50")} onClick={() => setSettings((s) => ({ ...s, roundingMode: "end_50" }))}>Terminar em ,50</div>
-                <div style={pillStyle(settings.roundingMode === "end_00")} onClick={() => setSettings((s) => ({ ...s, roundingMode: "end_00" }))}>Terminar em ,00</div>
-              </div>
-            </div>
+                  <div>
+                    <div style={small}>CMV alvo (%)</div>
+                    <NumberField
+                      style={input}
+                      value={Math.round(settings.targetCmv * 100)}
+                      decimals={0} // percentual inteiro
+                      min={1}
+                      max={100}
+                      inputMode="numeric"
+                      onCommit={(n) => setSettings((s) => ({ ...s, targetCmv: clamp(n, 1, 100) / 100 }))}
+                    />
+                  </div>
 
-            <hr style={{ border: 0, borderTop: "1px solid var(--border)", margin: "14px 0" }} />
+                  <div>
+                    <div style={small}>1 dash = (ml)</div>
+                    <NumberField
+                      style={input}
+                      value={settings.dashMl}
+                      decimals={2}
+                      min={0}
+                      max={10}
+                      onCommit={(n) => setSettings((s) => ({ ...s, dashMl: n }))}
+                    />
+                  </div>
 
-            <button
-              style={btnDanger}
-              onClick={() => {
-                if (confirm("Apagar todos os dados salvos no navegador?")) {
-                  setIngredients([]);
-                  setDrinks([]);
-                  setSettings({ ...DEFAULT_SETTINGS });
-                  setActiveDrinkId(null);
-                  setActiveIngredientId(null);
-                  setTab("receitas");
-                }
-              }}
-            >
-              Resetar tudo
-            </button>
+                  <div>
+                    <div style={small}>1 gota = (ml)</div>
+                    <NumberField
+                      style={input}
+                      value={settings.dropMl}
+                      decimals={2}
+                      min={0}
+                      max={1}
+                      onCommit={(n) => setSettings((s) => ({ ...s, dropMl: n }))}
+                    />
+                  </div>
+                </div>
 
-            <hr style={{ border: 0, borderTop: "1px solid var(--border)", margin: "14px 0" }} />
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ ...small, marginBottom: 6 }}>Exibir preço (cardápio público)</div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <div style={pillStyle(settings.publicMenuPriceVisibility === "show")} onClick={() => setSettings((s) => ({ ...s, publicMenuPriceVisibility: "show" }))}>Mostrar</div>
+                    <div style={pillStyle(settings.publicMenuPriceVisibility === "none")} onClick={() => setSettings((s) => ({ ...s, publicMenuPriceVisibility: "none" }))}>Ocultar</div>
+                  </div>
+                </div>
 
-            <div style={{ display: "grid", gap: 8 }}>
-              <h3 style={{ margin: 0, fontSize: FONT_SCALE.md }}>Importar e exportar CSV</h3>
-              <div style={small}>Seção separada para backup e restauração dos dados.</div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button style={btn} onClick={() => exportAsCsv({ ingredients, drinks, settings })}>
-                  Exportar CSV
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ ...small, marginBottom: 6 }}>Arredondamento psicológico (Receitas e preços)</div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <div style={pillStyle(settings.roundingMode === "none")} onClick={() => setSettings((s) => ({ ...s, roundingMode: "none" }))}>Nenhum</div>
+                    <div style={pillStyle(settings.roundingMode === "end_90")} onClick={() => setSettings((s) => ({ ...s, roundingMode: "end_90" }))}>Terminar em ,90</div>
+                    <div style={pillStyle(settings.roundingMode === "end_50")} onClick={() => setSettings((s) => ({ ...s, roundingMode: "end_50" }))}>Terminar em ,50</div>
+                    <div style={pillStyle(settings.roundingMode === "end_00")} onClick={() => setSettings((s) => ({ ...s, roundingMode: "end_00" }))}>Terminar em ,00</div>
+                  </div>
+                </div>
+
+                <hr style={{ border: 0, borderTop: "1px solid var(--border)", margin: "14px 0" }} />
+
+                <button
+                  style={btnDanger}
+                  onClick={() => {
+                    if (confirm("Apagar todos os dados salvos no navegador?")) {
+                      setIngredients([]);
+                      setDrinks([]);
+                      setSettings({ ...DEFAULT_SETTINGS });
+                      setActiveDrinkId(null);
+                      setActiveIngredientId(null);
+                      setTab("receitas");
+                    }
+                  }}
+                >
+                  Resetar tudo
                 </button>
-                <button style={btn} onClick={triggerCsvImport}>
-                  Importar CSV
-                </button>
+
+                <hr style={{ border: 0, borderTop: "1px solid var(--border)", margin: "14px 0" }} />
+
+                <div style={{ display: "grid", gap: 8 }}>
+                  <h3 style={{ margin: 0, fontSize: FONT_SCALE.md }}>Importar e exportar CSV</h3>
+                  <div style={small}>Seção separada para backup e restauração dos dados.</div>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    <button style={btn} onClick={() => exportAsCsv({ ingredients, drinks, settings })}>
+                      Exportar CSV
+                    </button>
+                    <button style={btn} onClick={triggerCsvImport}>
+                      Importar CSV
+                    </button>
+                  </div>
+                  <input
+                    ref={csvInputRef}
+                    type="file"
+                    accept=".csv,text/csv"
+                    style={{ display: "none" }}
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+
+                      const shouldReplace = confirm("Importar CSV e substituir os dados atuais?");
+                      if (shouldReplace) await importFromCsvFile(file);
+
+                      e.currentTarget.value = "";
+                    }}
+                  />
+                </div>
+              </>
+            )}
+
+            {settingsTab === "impressao" && (
+              <div style={{ display: "grid", gap: 10 }}>
+                <div style={{ ...small, fontWeight: 700 }}>Preferências de impressão dos pedidos</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span
+                    style={{
+                      fontSize: FONT_SCALE.sm,
+                      fontWeight: 700,
+                      color: qzConnectionState === "connected" ? "#0f5132" : "#7a3e00",
+                      background: qzConnectionState === "connected" ? "#d1fae5" : "#fff1c2",
+                      border: qzConnectionState === "connected" ? "1px solid #86efac" : "1px solid #f6cc5e",
+                      borderRadius: 999,
+                      padding: "2px 8px",
+                    }}
+                  >
+                    {qzConnectionState === "connected" ? "QZ conectado nesta janela" : "QZ desconectado nesta janela"}
+                  </span>
+                  <div style={small}>A conexão do QZ vale apenas para a aba/janela atual do navegador.</div>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+                  <select
+                    value={printMode}
+                    onChange={(e) => setPrintMode(e.target.value === "browser" ? "browser" : "qz")}
+                    style={{ ...btn, padding: "6px 10px", fontWeight: 500 }}
+                  >
+                    <option value="qz">QZ Tray (ESC/POS)</option>
+                    <option value="browser">Navegador (fallback)</option>
+                  </select>
+                  <input
+                    value={qzPrinterName}
+                    onChange={(e) => setQzPrinterName(e.target.value)}
+                    placeholder="Nome da impressora no QZ (opcional)"
+                    style={{ ...btn, minWidth: 280, padding: "6px 10px", fontWeight: 500 }}
+                  />
+                  <button style={{ ...btn, padding: "6px 10px" }} onClick={() => void connectQz()} disabled={qzBusy}>
+                    {qzBusy ? "Conectando..." : "Conectar QZ"}
+                  </button>
+                  <button style={{ ...btn, padding: "6px 10px" }} onClick={() => void printTestViaQz()} disabled={qzBusy || printMode !== "qz"}>
+                    Teste QZ
+                  </button>
+                </div>
+                {printMode === "qz" ? (
+                  <div style={small}>Impressão direta ESC/POS com encoding ISO-8859-1.</div>
+                ) : (
+                  <div style={small}>Modo fallback usando a janela de impressão do navegador.</div>
+                )}
+                {qzError ? <div style={{ ...small, color: "#b00020" }}>{qzError}</div> : null}
               </div>
-              <input
-                ref={csvInputRef}
-                type="file"
-                accept=".csv,text/csv"
-                style={{ display: "none" }}
-                onChange={async (e) => {
-                  const file = e.target.files?.[0];
-                  if (!file) return;
-
-                  const shouldReplace = confirm("Importar CSV e substituir os dados atuais?");
-                  if (shouldReplace) await importFromCsvFile(file);
-
-                  e.currentTarget.value = "";
-                }}
-              />
-            </div>
+            )}
           </div>
         )}
 

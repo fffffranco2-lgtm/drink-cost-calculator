@@ -2,6 +2,16 @@
 
 import Link from "next/link";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  AUTO_PRINT_STORAGE_KEY,
+  PRINT_MODE_STORAGE_KEY,
+  QZ_PRINTER_STORAGE_KEY,
+  type PrintMode,
+  type QzApi,
+  type QzConnectionState,
+  type QzPrintConfigOptions,
+  type QzPrintData,
+} from "@/lib/qz-tray";
 
 type OrderStatus = "pendente" | "em_progresso" | "concluido";
 type OrderSource = "mesa_qr" | "balcao";
@@ -37,57 +47,12 @@ type ActiveSession = {
   openedAt: string;
 };
 
-type PrintMode = "qz" | "browser";
-
-type QzPrintConfigOptions = {
-  encoding?: string;
-  copies?: number;
-};
-
-type QzPrintData = {
-  type: "raw";
-  format: "plain" | "command";
-  flavor?: "plain";
-  data: string;
-};
-
-type QzApi = {
-  security?: {
-    setCertificatePromise: (
-      promiseFactory: (resolve: (value: string) => void, reject: (reason?: unknown) => void) => void
-    ) => void;
-    setSignaturePromise: (signer: (toSign: string) => Promise<string>) => void;
-    setSignatureAlgorithm?: (algorithm: string) => void;
-  };
-  websocket: {
-    isActive: () => boolean;
-    connect: (options?: { retries?: number; delay?: number }) => Promise<void>;
-  };
-  printers: {
-    getDefault?: () => Promise<string>;
-    find: (query?: string) => Promise<string | string[]>;
-  };
-  configs: {
-    create: (printer: string, options?: QzPrintConfigOptions) => unknown;
-  };
-  print: (config: unknown, data: QzPrintData[]) => Promise<void>;
-};
-
-declare global {
-  interface Window {
-    qz?: QzApi;
-  }
-}
-
 const FONT_SCALE = {
   sm: 12,
   md: 14,
   lg: 20,
 } as const;
 const BAR_LOGO_PATH = "/manteca-logo.svg";
-const PRINT_MODE_STORAGE_KEY = "orders_print_mode";
-const QZ_PRINTER_STORAGE_KEY = "orders_qz_printer_name";
-const AUTO_PRINT_STORAGE_KEY = "orders_auto_print_enabled";
 
 function formatBRL(value: number) {
   return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -224,21 +189,26 @@ function buildEscPosTicket(order: AdminOrder) {
 }
 
 export default function AdminOrdersPage() {
+  const KANBAN_VERTICAL_GAP = 12;
   const [orders, setOrders] = useState<AdminOrder[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [ordersError, setOrdersError] = useState("");
   const [updatingOrderId, setUpdatingOrderId] = useState<string | null>(null);
   const [ordersUpdatedAt, setOrdersUpdatedAt] = useState<string | null>(null);
   const [expandedCompletedOrders, setExpandedCompletedOrders] = useState<Record<string, boolean>>({});
+  const [draggingOrder, setDraggingOrder] = useState<{ id: string; from: OrderStatus } | null>(null);
+  const [dragOverStatus, setDragOverStatus] = useState<OrderStatus | null>(null);
+  const ordersGridRef = useRef<HTMLDivElement | null>(null);
   const pendingBucketRef = useRef<HTMLDivElement | null>(null);
   const inProgressBucketRef = useRef<HTMLDivElement | null>(null);
   const [completedBucketMaxHeight, setCompletedBucketMaxHeight] = useState<number | null>(null);
+  const [kanbanViewportMaxHeight, setKanbanViewportMaxHeight] = useState<number | null>(null);
   const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
   const [sessionLoading, setSessionLoading] = useState(false);
   const [printOrderState, setPrintOrderState] = useState<AdminOrder | null>(null);
   const [printMode, setPrintMode] = useState<PrintMode>("qz");
   const [autoPrintEnabled, setAutoPrintEnabled] = useState(false);
-  const [qzPrinterName, setQzPrinterName] = useState("");
+  const [qzConnectionState, setQzConnectionState] = useState<QzConnectionState>("disconnected");
   const [qzBusy, setQzBusy] = useState(false);
   const qzLoaderRef = useRef<Promise<QzApi> | null>(null);
   const qzSecurityReadyRef = useRef(false);
@@ -405,6 +375,44 @@ export default function AdminOrdersPage() {
     setExpandedCompletedOrders((prev) => ({ ...prev, [orderId]: !prev[orderId] }));
   }, []);
 
+  const handleOrderDragStart = useCallback(
+    (event: React.DragEvent<HTMLDivElement>, orderId: string, from: OrderStatus) => {
+      if (updatingOrderId) {
+        event.preventDefault();
+        return;
+      }
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", orderId);
+      setDraggingOrder({ id: orderId, from });
+    },
+    [updatingOrderId]
+  );
+
+  const handleOrderDragEnd = useCallback(() => {
+    setDraggingOrder(null);
+    setDragOverStatus(null);
+  }, []);
+
+  const handleBucketDragOver = useCallback(
+    (event: React.DragEvent<HTMLDivElement>, target: OrderStatus) => {
+      if (!draggingOrder) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = draggingOrder.from === target ? "none" : "move";
+      setDragOverStatus(target);
+    },
+    [draggingOrder]
+  );
+
+  const handleBucketDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>, target: OrderStatus) => {
+      event.preventDefault();
+      setDragOverStatus(null);
+      if (!draggingOrder || draggingOrder.from === target) return;
+      void moveOrderTo(draggingOrder.id, target);
+    },
+    [draggingOrder, moveOrderTo]
+  );
+
   const printOrder = useCallback((order: AdminOrder) => {
     setPrintOrderState(order);
     window.setTimeout(() => window.print(), 120);
@@ -497,25 +505,13 @@ export default function AdminOrdersPage() {
     qzSecurityReadyRef.current = true;
   }, []);
 
-  const connectQz = useCallback(async () => {
-    setQzBusy(true);
-    setOrdersError("");
-    try {
-      const qz = await loadQz();
-      await configureQzSecurity(qz);
-      if (!qz.websocket.isActive()) {
-        await qz.websocket.connect({ retries: 2, delay: 1 });
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Falha ao conectar com QZ Tray.";
-      setOrdersError(`${message} Inicie o QZ Tray e permita a conexão do site.`);
-    } finally {
-      setQzBusy(false);
-    }
-  }, [configureQzSecurity, loadQz]);
-
   const resolveQzPrinter = useCallback(async (qz: QzApi) => {
-    const typedName = qzPrinterName.trim();
+    let typedName = "";
+    try {
+      typedName = (localStorage.getItem(QZ_PRINTER_STORAGE_KEY) ?? "").trim();
+    } catch {
+      // ignorar indisponibilidade de storage
+    }
     if (typedName) return typedName;
 
     if (typeof qz.printers.getDefault === "function") {
@@ -531,7 +527,7 @@ export default function AdminOrdersPage() {
       return discovered[0].trim();
     }
     throw new Error("Nenhuma impressora encontrada pelo QZ Tray.");
-  }, [qzPrinterName]);
+  }, []);
 
   const printOrderViaQz = useCallback(async (order: AdminOrder) => {
     setQzBusy(true);
@@ -542,6 +538,7 @@ export default function AdminOrdersPage() {
       if (!qz.websocket.isActive()) {
         await qz.websocket.connect({ retries: 2, delay: 1 });
       }
+      setQzConnectionState("connected");
 
       const printerName = await resolveQzPrinter(qz);
       const config = qz.configs.create(printerName, { encoding: "ISO-8859-1", copies: 1 });
@@ -555,28 +552,11 @@ export default function AdminOrdersPage() {
     } catch (error) {
       const message = error instanceof Error ? error.message : "Falha ao imprimir via QZ Tray.";
       setOrdersError(message);
+      setQzConnectionState("disconnected");
     } finally {
       setQzBusy(false);
     }
   }, [configureQzSecurity, loadQz, resolveQzPrinter]);
-
-  const printTestViaQz = useCallback(async () => {
-    const fakeOrder: AdminOrder = {
-      id: "test",
-      code: "TESTE-QZ",
-      customerName: "Teste",
-      customerPhone: null,
-      notes: "Impressao de teste",
-      status: "pendente",
-      source: "balcao",
-      tableCode: null,
-      subtotal: 12.5,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      items: [{ drinkName: "Drink de teste", qty: 1, unitPrice: 12.5, lineTotal: 12.5, notes: null, drinkNotes: null, itemNotes: null }],
-    };
-    await printOrderViaQz(fakeOrder);
-  }, [printOrderViaQz]);
 
   const printOrderWithMode = useCallback(async (order: AdminOrder) => {
     if (printMode === "qz") {
@@ -592,8 +572,6 @@ export default function AdminOrdersPage() {
       if (savedMode === "qz" || savedMode === "browser") {
         setPrintMode(savedMode);
       }
-      const savedPrinter = localStorage.getItem(QZ_PRINTER_STORAGE_KEY);
-      if (savedPrinter) setQzPrinterName(savedPrinter);
       const savedAutoPrint = localStorage.getItem(AUTO_PRINT_STORAGE_KEY);
       if (savedAutoPrint === "1") setAutoPrintEnabled(true);
     } catch {
@@ -603,27 +581,38 @@ export default function AdminOrdersPage() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(PRINT_MODE_STORAGE_KEY, printMode);
-    } catch {
-      // ignorar indisponibilidade de storage
-    }
-  }, [printMode]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(QZ_PRINTER_STORAGE_KEY, qzPrinterName);
-    } catch {
-      // ignorar indisponibilidade de storage
-    }
-  }, [qzPrinterName]);
-
-  useEffect(() => {
-    try {
       localStorage.setItem(AUTO_PRINT_STORAGE_KEY, autoPrintEnabled ? "1" : "0");
     } catch {
       // ignorar indisponibilidade de storage
     }
   }, [autoPrintEnabled]);
+
+  const refreshQzWindowConnection = useCallback(() => {
+    try {
+      setQzConnectionState(window.qz?.websocket.isActive() ? "connected" : "disconnected");
+    } catch {
+      setQzConnectionState("disconnected");
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshQzWindowConnection();
+    const interval = window.setInterval(refreshQzWindowConnection, 2000);
+    return () => window.clearInterval(interval);
+  }, [refreshQzWindowConnection]);
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === PRINT_MODE_STORAGE_KEY) {
+        const nextMode = event.newValue;
+        if (nextMode === "qz" || nextMode === "browser") {
+          setPrintMode(nextMode);
+        }
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
 
   useEffect(() => {
     if (!orders.length) return;
@@ -665,6 +654,18 @@ export default function AdminOrdersPage() {
     window.addEventListener("resize", updateCompletedBucketMaxHeight);
     return () => window.removeEventListener("resize", updateCompletedBucketMaxHeight);
   }, [groupedOrders, expandedCompletedOrders, ordersLoading, ordersError]);
+
+  useEffect(() => {
+    const updateKanbanViewportMaxHeight = () => {
+      const top = ordersGridRef.current?.getBoundingClientRect().top ?? 0;
+      const available = Math.floor(window.innerHeight - top - KANBAN_VERTICAL_GAP);
+      setKanbanViewportMaxHeight(available > 260 ? available : 260);
+    };
+
+    updateKanbanViewportMaxHeight();
+    window.addEventListener("resize", updateKanbanViewportMaxHeight);
+    return () => window.removeEventListener("resize", updateKanbanViewportMaxHeight);
+  }, [orders.length, ordersError, printMode, autoPrintEnabled]);
 
   const page: React.CSSProperties = {
     ["--bg" as never]: "#f6f8fa",
@@ -815,6 +816,19 @@ export default function AdminOrdersPage() {
           <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
               <div style={{ ...small, fontWeight: 700 }}>Impressão</div>
+              <span
+                title={qzConnectionState === "connected" ? "QZ conectado nesta janela" : "QZ desconectado nesta janela"}
+                aria-label={qzConnectionState === "connected" ? "QZ conectado nesta janela" : "QZ desconectado nesta janela"}
+                style={{
+                  width: 10,
+                  height: 10,
+                  display: "inline-block",
+                  borderRadius: 999,
+                  background: qzConnectionState === "connected" ? "#16a34a" : "#dc2626",
+                  boxShadow: qzConnectionState === "connected" ? "0 0 8px rgba(22, 163, 74, 0.5)" : "0 0 8px rgba(220, 38, 38, 0.45)",
+                  border: "1px solid rgba(0,0,0,0.12)",
+                }}
+              />
               {autoPrintEnabled ? (
                 <span
                   style={{
@@ -832,32 +846,6 @@ export default function AdminOrdersPage() {
               ) : null}
             </div>
             <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-              <select
-                value={printMode}
-                onChange={(e) => setPrintMode(e.target.value === "browser" ? "browser" : "qz")}
-                style={{ ...btn, padding: "6px 10px", fontWeight: 500 }}
-              >
-                <option value="qz">QZ Tray (ESC/POS)</option>
-                <option value="browser">Navegador (fallback)</option>
-              </select>
-
-              {printMode === "qz" ? (
-                <>
-                  <input
-                    value={qzPrinterName}
-                    onChange={(e) => setQzPrinterName(e.target.value)}
-                    placeholder="Nome da impressora no QZ (opcional)"
-                    style={{ ...btn, minWidth: 260, padding: "6px 10px", fontWeight: 500 }}
-                  />
-                  <button style={{ ...btn, padding: "6px 10px" }} onClick={() => void connectQz()} disabled={qzBusy}>
-                    {qzBusy ? "Conectando..." : "Conectar QZ"}
-                  </button>
-                  <button style={{ ...btn, padding: "6px 10px" }} onClick={() => void printTestViaQz()} disabled={qzBusy}>
-                    Teste QZ
-                  </button>
-                </>
-              ) : null}
-
               <label style={{ display: "inline-flex", alignItems: "center", gap: 6, ...small }}>
                 <input
                   type="checkbox"
@@ -869,29 +857,42 @@ export default function AdminOrdersPage() {
               </label>
             </div>
             {printMode === "qz" ? (
-              <div style={small}>Impressão direta ESC/POS com encoding ISO-8859-1.</div>
+              <div style={small}>Impressão direta ESC/POS com encoding ISO-8859-1. Ajustes em Configurações &gt; Impressão.</div>
             ) : (
-              <div style={small}>Modo fallback usando a janela de impressão do navegador.</div>
+              <div style={small}>Modo fallback usando a janela de impressão do navegador (definido em Configurações &gt; Impressão).</div>
             )}
           </div>
           {ordersError ? <div style={{ ...small, color: "#b00020", marginTop: 8 }}>{ordersError}</div> : null}
         </div>
 
-        <div className="orders-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
+        <div ref={ordersGridRef} className="orders-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
           {([
             ["pendente", "Pendentes"],
             ["em_progresso", "Em progresso"],
             ["concluido", "Concluídos"],
           ] as Array<[OrderStatus, string]>).map(([statusKey, title]) => (
+            (() => {
+              const columnMaxHeight =
+                statusKey === "concluido" && completedBucketMaxHeight
+                  ? kanbanViewportMaxHeight
+                    ? Math.min(completedBucketMaxHeight, kanbanViewportMaxHeight)
+                    : completedBucketMaxHeight
+                  : kanbanViewportMaxHeight;
+
+              return (
             <div
               key={statusKey}
               ref={statusKey === "pendente" ? pendingBucketRef : statusKey === "em_progresso" ? inProgressBucketRef : undefined}
+              onDragOver={(event) => handleBucketDragOver(event, statusKey)}
+              onDrop={(event) => handleBucketDrop(event, statusKey)}
+              onDragLeave={() => setDragOverStatus((current) => (current === statusKey ? null : current))}
               style={{
                 ...card,
                 padding: 10,
                 display: "flex",
                 flexDirection: "column",
-                maxHeight: statusKey === "concluido" && completedBucketMaxHeight ? completedBucketMaxHeight : undefined,
+                maxHeight: columnMaxHeight ?? undefined,
+                boxShadow: dragOverStatus === statusKey ? "inset 0 0 0 2px #7da6d8" : undefined,
               }}
             >
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
@@ -904,8 +905,8 @@ export default function AdminOrdersPage() {
                   display: "flex",
                   flexDirection: "column",
                   gap: 8,
-                  overflowY: statusKey === "concluido" && completedBucketMaxHeight ? "auto" : "visible",
-                  paddingRight: statusKey === "concluido" ? 4 : 0,
+                  overflowY: columnMaxHeight ? "auto" : "visible",
+                  paddingRight: columnMaxHeight ? 4 : 0,
                 }}
               >
                 {groupedOrders[statusKey].map((order) => {
@@ -915,23 +916,21 @@ export default function AdminOrdersPage() {
                     statusKey === "pendente" ? "#fff1f1" : statusKey === "em_progresso" ? "#fff8df" : "#ecfdf3";
                   const statusCardBorder =
                     statusKey === "pendente" ? "#f2cccc" : statusKey === "em_progresso" ? "#eed9a7" : "#bfe8cf";
-                  const statusButtonStyle: React.CSSProperties =
-                    statusKey === "pendente"
-                      ? { background: "#fde2e2", borderColor: "#e9b9b9" }
-                      : statusKey === "em_progresso"
-                      ? { background: "#fdf0c4", borderColor: "#e8d08d" }
-                      : { background: "#dcfce7", borderColor: "#a7d9bc" };
 
                   return (
                     <div
                       key={order.id}
+                      draggable
+                      onDragStart={(event) => handleOrderDragStart(event, order.id, statusKey)}
+                      onDragEnd={handleOrderDragEnd}
                       onClick={isCompletedCard ? () => toggleCompletedOrderCard(order.id) : undefined}
                       style={{
                         border: `1px solid ${statusCardBorder}`,
                         borderRadius: 10,
                         padding: 9,
                         background: statusCardBackground,
-                        cursor: isCompletedCard ? "pointer" : "default",
+                        cursor: draggingOrder?.id === order.id ? "grabbing" : "grab",
+                        opacity: draggingOrder?.id === order.id ? 0.75 : 1,
                       }}
                     >
                       <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
@@ -971,51 +970,23 @@ export default function AdminOrdersPage() {
                           {order.notes ? <div style={{ ...small, marginTop: 6 }}>Obs: {order.notes}</div> : null}
 
                           <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "34px 1fr 34px", alignItems: "center", gap: 8 }}>
-                            {statusKey === "em_progresso" || statusKey === "concluido" ? (
-                              <button
-                                aria-label="Mover para a esquerda"
-                                style={{ ...btn, ...statusButtonStyle, width: 34, height: 34, padding: 0, borderRadius: 999, fontSize: FONT_SCALE.lg, lineHeight: 1 }}
-                                disabled={updatingOrderId === order.id}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  void moveOrderTo(order.id, statusKey === "em_progresso" ? "pendente" : "em_progresso");
-                                }}
-                              >
-                                ←
-                              </button>
-                            ) : (
-                              <div />
-                            )}
+                            <div />
 
                             <strong style={{ fontSize: FONT_SCALE.md, textAlign: "center" }}>Total: {formatBRL(order.subtotal)}</strong>
 
-                            {statusKey === "pendente" || statusKey === "em_progresso" ? (
-                              <button
-                                aria-label="Mover para a direita"
-                                style={{ ...btn, ...statusButtonStyle, width: 34, height: 34, padding: 0, borderRadius: 999, fontSize: FONT_SCALE.lg, lineHeight: 1 }}
-                                disabled={updatingOrderId === order.id}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  void moveOrderTo(order.id, statusKey === "pendente" ? "em_progresso" : "concluido");
-                                }}
-                              >
-                                →
-                              </button>
-                            ) : (
-                              <div />
-                            )}
+                            <button
+                              title={printMode === "qz" ? "Imprimir via QZ" : "Imprimir 58mm"}
+                              aria-label={printMode === "qz" ? "Imprimir via QZ" : "Imprimir 58mm"}
+                              style={{ ...btn, width: 34, height: 34, padding: 0, borderRadius: 999, fontSize: FONT_SCALE.md, lineHeight: 1, background: "#e7f0ff", borderColor: "#bfd4f5" }}
+                              disabled={qzBusy}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void printOrderWithMode(order);
+                              }}
+                            >
+                              🖨
+                            </button>
                           </div>
-
-                          <button
-                            style={{ ...btn, marginTop: 8, width: "100%", background: "#e7f0ff", borderColor: "#bfd4f5", fontSize: FONT_SCALE.sm }}
-                            disabled={qzBusy}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void printOrderWithMode(order);
-                            }}
-                          >
-                            {qzBusy ? "Imprimindo..." : printMode === "qz" ? "Imprimir via QZ" : "Imprimir 58mm"}
-                          </button>
                         </>
                       ) : null}
                     </div>
@@ -1029,6 +1000,8 @@ export default function AdminOrdersPage() {
                 )}
               </div>
             </div>
+              );
+            })()
           ))}
         </div>
       </div>

@@ -166,6 +166,18 @@ function normalizeTableCode(value: string | null) {
   return cleaned;
 }
 
+function formatPhoneInput(value: string) {
+  const digits = value.replace(/\D/g, "").slice(0, 11);
+  if (!digits) return "";
+  if (digits.length <= 2) return `(${digits}`;
+  return `(${digits.slice(0, 2)}) ${digits.slice(2)}`;
+}
+
+function isValidBrazilCellPhone(value: string) {
+  const digits = value.replace(/\D/g, "");
+  return digits.length === 11;
+}
+
 function applyPsychRounding(price: number, mode: RoundingMode) {
   if (!Number.isFinite(price)) return 0;
   if (mode === "none") return price;
@@ -584,6 +596,10 @@ export default function PublicMenuPage() {
 
   const submitOrder = async () => {
     if (!cartItems.length || isSubmittingOrder) return;
+    if (customerPhone.trim() && !isValidBrazilCellPhone(customerPhone)) {
+      setCheckoutError("Telefone deve estar no formato (DD) 999999999.");
+      return;
+    }
 
     setIsSubmittingOrder(true);
     setCheckoutError("");
@@ -1206,8 +1222,9 @@ export default function PublicMenuPage() {
                     style={input}
                     placeholder="Telefone (opcional)"
                     value={customerPhone}
-                    onChange={(e) => setCustomerPhone(e.target.value)}
-                    maxLength={30}
+                    onChange={(e) => setCustomerPhone(formatPhoneInput(e.target.value))}
+                    maxLength={14}
+                    inputMode="numeric"
                   />
 
                   <textarea

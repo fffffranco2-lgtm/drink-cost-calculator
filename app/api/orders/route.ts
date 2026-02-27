@@ -199,6 +199,17 @@ function sanitizeText(value: unknown, maxLen: number) {
   return trimmed.slice(0, maxLen);
 }
 
+function sanitizeBrazilCellPhone(value: unknown) {
+  if (typeof value !== "string") return { value: null as string | null, error: null as string | null };
+  const trimmed = value.trim();
+  if (!trimmed) return { value: null as string | null, error: null as string | null };
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits.length !== 11) {
+    return { value: null as string | null, error: "Telefone inválido. Use o formato (DD) 999999999." };
+  }
+  return { value: `(${digits.slice(0, 2)}) ${digits.slice(2)}`, error: null as string | null };
+}
+
 function normalizeTableCode(value: unknown) {
   if (typeof value !== "string") return null;
   const cleaned = value.trim().toUpperCase().replace(/\s+/g, "");
@@ -609,7 +620,11 @@ export async function POST(request: Request) {
   }
 
   const customerName = sanitizeText(body.customerName, 80);
-  const customerPhone = sanitizeText(body.customerPhone, 30);
+  const phoneResult = sanitizeBrazilCellPhone(body.customerPhone);
+  if (phoneResult.error) {
+    return NextResponse.json({ error: phoneResult.error }, { status: 400 });
+  }
+  const customerPhone = phoneResult.value;
   const notes = sanitizeText(body.notes, 400);
   const origin = resolveOrderSource(body);
 
