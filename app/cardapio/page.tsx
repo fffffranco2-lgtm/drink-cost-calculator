@@ -873,8 +873,8 @@ export default function PublicMenuPage() {
   };
 
   const fontScale = {
-    sm: 12,
-    md: 14,
+    sm: 14,
+    md: 16,
     lg: 18,
   } as const;
 
@@ -937,9 +937,10 @@ export default function PublicMenuPage() {
             style={{
               marginTop: 12,
               width: menuSectionWidth,
-              display: "grid",
-              gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`,
+              display: "flex",
+              flexWrap: "wrap",
               gap: 12,
+              justifyContent: "center",
             }}
           >
             {rows.map(({ drink, displayPrice, ingredientLines }) => (
@@ -951,9 +952,10 @@ export default function PublicMenuPage() {
                   borderRadius: 16,
                   background: "var(--panel-elevated)",
                   overflow: "hidden",
-                  display: "grid",
-                  height: 344,
-                  gridTemplateRows: "60% 40%",
+                  display: "flex",
+                  flexDirection: "column",
+                  width: 200,
+                  minHeight: 0,
                   cursor: "pointer",
                   padding: 0,
                   textAlign: "left",
@@ -990,6 +992,8 @@ export default function PublicMenuPage() {
                     justifyContent: "center",
                     color: "var(--muted)",
                     fontSize: fontScale.sm,
+                    aspectRatio: "1",
+                    overflow: "hidden",
                   }}
                 >
                   {drink.photoDataUrl ? (
@@ -1000,6 +1004,7 @@ export default function PublicMenuPage() {
                         width: "100%",
                         height: "100%",
                         objectFit: "cover",
+                        objectPosition: "center",
                       }}
                     />
                   ) : (
@@ -1007,8 +1012,8 @@ export default function PublicMenuPage() {
                   )}
                 </div>
 
-                <div style={{ padding: "14px 10px", display: "flex", flexDirection: "column", textAlign: "center", minHeight: 0, alignItems: "center", height: "100%" }}>
-                  <div style={{ fontSize: fontScale.md, fontWeight: 700, lineHeight: 1.1, marginTop: 4 }}>{drink.name}</div>
+                <div style={{ padding: "14px 10px", display: "flex", flexDirection: "column", textAlign: "center", alignItems: "center", flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: fontScale.md, fontWeight: 700, lineHeight: 1.1, marginTop: 4, overflowWrap: "break-word", wordBreak: "break-word", width: "100%" }}>{drink.name}</div>
 
                   <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", width: "100%" }}>
                     <div
@@ -1019,6 +1024,8 @@ export default function PublicMenuPage() {
                         color: "var(--muted)",
                         whiteSpace: "normal",
                         width: "100%",
+                        overflowWrap: "break-word",
+                        wordBreak: "break-word",
                       }}
                     >
                       {ingredientLines.length ? (
@@ -1045,7 +1052,7 @@ export default function PublicMenuPage() {
             ))}
 
             {rows.length === 0 && (
-              <div style={{ padding: 14, border: "1px dashed var(--border)", borderRadius: 14, color: "var(--muted)", gridColumn: "1 / -1", background: "var(--panel2)" }}>
+              <div style={{ padding: 14, border: "1px dashed var(--border)", borderRadius: 14, color: "var(--muted)", width: "100%", background: "var(--panel2)" }}>
                 Nenhum drink selecionado para o cardápio público.
               </div>
             )}
@@ -1123,12 +1130,12 @@ export default function PublicMenuPage() {
             </button>
 
             <div style={{ display: "grid", gridTemplateColumns: "1fr", gridTemplateRows: "1fr auto", height: "100%" }}>
-              <div style={{ background: "var(--panel2)", minHeight: 0 }}>
+              <div style={{ background: "var(--panel2)", minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
                 {selectedRow.drink.photoDataUrl ? (
                   <img
                     src={selectedRow.drink.photoDataUrl}
                     alt={selectedRow.drink.name}
-                    style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                    style={{ width: "100%", height: "100%", objectFit: "cover", objectPosition: "center" }}
                   />
                 ) : (
                   <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--muted)" }}>

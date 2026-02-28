@@ -2,6 +2,9 @@
 
 import Link from "next/link";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { ConfirmModal } from "@/app/components/ConfirmModal";
+import { useToast } from "@/app/components/ToastContext";
+import { AdminHeader } from "@/app/components/AdminHeader";
 
 type TableConfig = {
   id: string;
@@ -25,7 +28,8 @@ export default function AdminTablesPage() {
   const [creating, setCreating] = useState(false);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [confirmRemove, setConfirmRemove] = useState<TableConfig | null>(null);
+  const { addToast } = useToast();
 
   const [createName, setCreateName] = useState("");
   const [createCode, setCreateCode] = useState("");
@@ -103,6 +107,7 @@ export default function AdminTablesPage() {
       }));
       setCreateName("");
       setCreateCode("");
+      addToast("Mesa criada com sucesso!");
     } catch {
       setError("Erro de rede ao criar mesa.");
     } finally {
@@ -145,13 +150,19 @@ export default function AdminTablesPage() {
 
   const removeTable = async (table: TableConfig) => {
     if (deletingId) return;
-    const confirmed = window.confirm(`Remover a mesa \"${table.name}\"?`);
-    if (!confirmed) return;
+    setConfirmRemove(table);
+  };
 
-    setDeletingId(table.id);
+  const executeRemoveTable = () => {
+    const table = confirmRemove;
+    if (!table) return;
+    const tableToRemove = table;
+    setConfirmRemove(null);
+    setDeletingId(tableToRemove.id);
     setError("");
+    (async () => {
     try {
-      const res = await fetch(`/admin/api/mesas/${table.id}`, {
+      const res = await fetch(`/admin/api/mesas/${tableToRemove.id}`, {
         method: "DELETE",
       });
       const payload = (await res.json()) as { ok?: boolean; error?: string };
@@ -160,10 +171,10 @@ export default function AdminTablesPage() {
         return;
       }
 
-      setTables((prev) => prev.filter((item) => item.id !== table.id));
+      setTables((prev) => prev.filter((item) => item.id !== tableToRemove.id));
       setDraftById((prev) => {
         const next = { ...prev };
-        delete next[table.id];
+        delete next[tableToRemove.id];
         return next;
       });
     } catch {
@@ -171,15 +182,13 @@ export default function AdminTablesPage() {
     } finally {
       setDeletingId(null);
     }
+    })();
   };
 
   const copyLink = async (table: TableConfig) => {
     try {
       await navigator.clipboard.writeText(table.link);
-      setCopiedId(table.id);
-      window.setTimeout(() => {
-        setCopiedId((current) => (current === table.id ? null : current));
-      }, 1300);
+      addToast("Link copiado!");
     } catch {
       setError("Não foi possível copiar o link da mesa.");
     }
@@ -218,7 +227,7 @@ export default function AdminTablesPage() {
     borderRadius: 16,
     padding: 14,
   };
-  const small: React.CSSProperties = { fontSize: 12, color: "var(--muted)" };
+  const small: React.CSSProperties = { fontSize: 14, color: "var(--muted)" };
   const input: React.CSSProperties = {
     width: "100%",
     padding: 10,
@@ -241,34 +250,28 @@ export default function AdminTablesPage() {
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
-    fontSize: 12,
+    fontSize: 14,
   };
 
   return (
     <div style={page}>
       <div style={container}>
-        <div style={{ ...card, marginBottom: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-            <div>
-              <h1 style={{ margin: 0, fontSize: 20 }}>Configuração de Mesas</h1>
-              <div style={small}>Crie, renomeie e remova mesas com link e QR code para pedido.</div>
-            </div>
+        <AdminHeader
+          title="Configuração de Mesas"
+          subtitle="Crie, renomeie e remova mesas com link e QR code para pedido."
+          currentPage="mesas"
+          actions={
+            <button style={btn} onClick={() => void loadTables()} disabled={loading || creating || Boolean(savingId) || Boolean(deletingId)}>
+              {loading ? "Atualizando..." : "Atualizar"}
+            </button>
+          }
+        />
 
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Link href="/admin/pedidos" style={btn}>Pedidos</Link>
-              <Link href="/admin" style={btn}>Área interna</Link>
-              <button style={btn} onClick={() => void loadTables()} disabled={loading || creating || Boolean(savingId) || Boolean(deletingId)}>
-                {loading ? "Atualizando..." : "Atualizar"}
-              </button>
-            </div>
+        {error ? (
+          <div style={{ marginBottom: 12, padding: 10, borderRadius: 10, border: "1px solid var(--danger-border)", background: "var(--danger-bg)", color: "var(--danger-ink)", fontSize: 14 }}>
+            {error}
           </div>
-
-          {error ? (
-            <div style={{ marginTop: 10, padding: 10, borderRadius: 10, border: "1px solid var(--danger-border)", background: "var(--danger-bg)", color: "var(--danger-ink)", fontSize: 12 }}>
-              {error}
-            </div>
-          ) : null}
-        </div>
+        ) : null}
 
         <div style={{ ...card, marginBottom: 12 }}>
           <h2 style={{ marginTop: 0, fontSize: 16 }}>Nova mesa</h2>
@@ -305,7 +308,33 @@ export default function AdminTablesPage() {
 
         <div style={{ display: "grid", gap: 10 }}>
           {tables.length === 0 ? (
-            <div style={{ ...card, color: "var(--muted)" }}>Nenhuma mesa cadastrada.</div>
+            <div
+              style={{
+                ...card,
+                padding: 32,
+                textAlign: "center",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: 16,
+              }}
+            >
+              <span
+                className="material-symbols-rounded"
+                style={{ fontSize: 48, color: "var(--muted)", opacity: 0.7 }}
+                aria-hidden
+              >
+                table_restaurant
+              </span>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: "var(--ink)" }}>
+                  Ainda não há mesas
+                </h3>
+                <p style={{ margin: "8px 0 0", fontSize: 14, color: "var(--muted)", maxWidth: 320 }}>
+                  Crie sua primeira mesa no formulário acima para gerar link e QR code para pedidos.
+                </p>
+              </div>
+            </div>
           ) : (
             tables.map((table) => {
               const draft = draftById[table.id] ?? { name: table.name, code: table.code };
@@ -335,7 +364,7 @@ export default function AdminTablesPage() {
 
                     <div>
                       <div style={{ ...small, marginBottom: 4 }}>Link público</div>
-                      <div style={{ ...input, wordBreak: "break-all", fontSize: 12 }}>{table.link}</div>
+                      <div style={{ ...input, wordBreak: "break-all", fontSize: 14 }}>{table.link}</div>
                     </div>
 
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -351,7 +380,7 @@ export default function AdminTablesPage() {
                         onClick={() => void copyLink(table)}
                         disabled={Boolean(savingId) || Boolean(deletingId)}
                       >
-                        {copiedId === table.id ? "Copiado" : "Copiar link"}
+                        Copiar link
                       </button>
                       <a href={table.link} target="_blank" rel="noreferrer" style={btn}>Abrir link</a>
                       <button
@@ -405,6 +434,17 @@ export default function AdminTablesPage() {
           )}
         </div>
       </div>
+
+      <ConfirmModal
+        open={Boolean(confirmRemove)}
+        onClose={() => setConfirmRemove(null)}
+        onConfirm={executeRemoveTable}
+        title="Remover mesa"
+        message={confirmRemove ? `Remover a mesa "${confirmRemove.name}"? Esta ação não pode ser desfeita.` : ""}
+        confirmLabel="Remover"
+        cancelLabel="Cancelar"
+        variant="danger"
+      />
     </div>
   );
 }

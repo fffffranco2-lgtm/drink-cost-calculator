@@ -3,6 +3,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import Link from "next/link";
+import { ConfirmModal } from "@/app/components/ConfirmModal";
+import { useToast } from "@/app/components/ToastContext";
+import { AdminHeader } from "@/app/components/AdminHeader";
 import {
   PRINT_MODE_STORAGE_KEY,
   QZ_PRINTER_STORAGE_KEY,
@@ -679,9 +682,9 @@ function NumberField(props: {
 
 /* ------------------------------ UI ------------------------------ */
 const FONT_SCALE = {
-  sm: 12,
-  md: 14,
-  lg: 18,
+  sm: 14,
+  md: 16,
+  lg: 20,
 } as const;
 
 function pillStyle(active: boolean): React.CSSProperties {
@@ -847,6 +850,12 @@ export default function Page() {
   const [qzConnectionState, setQzConnectionState] = useState<QzConnectionState>("disconnected");
   const qzLoaderRef = useRef<Promise<QzApi> | null>(null);
   const qzSecurityReadyRef = useRef(false);
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [confirmImportFile, setConfirmImportFile] = useState<File | null>(null);
+  const [confirmRemovePhoto, setConfirmRemovePhoto] = useState<string | null>(null);
+  const [confirmRemoveDrink, setConfirmRemoveDrink] = useState<Drink | null>(null);
+  const [confirmRemoveIngredient, setConfirmRemoveIngredient] = useState<Ingredient | null>(null);
+  const { addToast } = useToast();
 
   const remoteState: AppStatePayload = useMemo(
     () => ({
@@ -1787,41 +1796,26 @@ export default function Page() {
       <style>{focusStyle}</style>
 
       <div style={container}>
-        <div style={{ ...headerCard, marginBottom: 14 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
-            <div>
-              <h1 style={{ margin: 0, fontSize: FONT_SCALE.lg, letterSpacing: -0.2 }}>Custos de Drinks</h1>
-              <div style={small}>Área interna da operação • Arredondamento psicológico • Inputs numéricos editáveis</div>
-              {remoteError ? <div style={{ ...small, color: "#b00020", marginTop: 4 }}>{remoteError}</div> : null}
-            </div>
-
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-              <button style={btn} onClick={logout}>
-                Sair
-              </button>
-            </div>
-          </div>
-
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Link
-                href="/"
-                target="_blank"
-                rel="noreferrer"
-                style={{ ...topTab(false), textDecoration: "none", display: "inline-flex", alignItems: "center" }}
-              >
+        <AdminHeader
+          title="Custos de Drinks"
+          subtitle={remoteError ? undefined : "Área interna da operação • Arredondamento psicológico • Inputs numéricos editáveis"}
+          currentPage="admin"
+          actions={
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+              {remoteError ? <div style={{ ...small, color: "#b00020" }}>{remoteError}</div> : null}
+              <Link href="/" target="_blank" rel="noreferrer" style={{ ...btn, textDecoration: "none" }}>
                 Cardápio Público
               </Link>
-              <button style={topTab(tab === "receitas")} onClick={() => setTab("receitas")}>Resumo</button>
-              <button style={topTab(tab === "drinks")} onClick={() => setTab("drinks")}>Drinks</button>
-              <button style={topTab(tab === "ingredients")} onClick={() => setTab("ingredients")}>Ingredientes</button>
-              <button style={topTab(tab === "settings")} onClick={() => setTab("settings")}>Configurações</button>
+              <button style={btn} onClick={logout}>Sair</button>
             </div>
+          }
+        />
 
-            <Link href="/admin/pedidos" style={{ ...topTab(false), textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
-              Pedidos
-            </Link>
-          </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+          <button style={topTab(tab === "receitas")} onClick={() => setTab("receitas")}>Resumo</button>
+          <button style={topTab(tab === "drinks")} onClick={() => setTab("drinks")}>Drinks</button>
+          <button style={topTab(tab === "ingredients")} onClick={() => setTab("ingredients")}>Ingredientes</button>
+          <button style={topTab(tab === "settings")} onClick={() => setTab("settings")}>Configurações</button>
         </div>
 
         {/* -------------------- RECEITAS -------------------- */}
@@ -2080,8 +2074,33 @@ export default function Page() {
               )}
 
               {cartaRows.length === 0 && (
-                <div style={{ padding: 14, border: "1px dashed var(--border)", borderRadius: 14, color: "var(--muted)" }}>
-                  Nenhum drink encontrado.
+                <div
+                  style={{
+                    padding: 24,
+                    border: "1px dashed var(--border)",
+                    borderRadius: 14,
+                    textAlign: "center",
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: 12,
+                  }}
+                >
+                  <span
+                    className="material-symbols-rounded"
+                    style={{ fontSize: 40, color: "var(--muted)", opacity: 0.7 }}
+                    aria-hidden
+                  >
+                    search_off
+                  </span>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: FONT_SCALE.md, color: "var(--ink)" }}>
+                      Nenhum drink corresponde à busca
+                    </div>
+                    <div style={{ ...small, marginTop: 4 }}>
+                      Tente outros termos ou limpe o campo de busca.
+                    </div>
+                  </div>
                 </div>
               )}
             </div>
@@ -2269,7 +2288,26 @@ export default function Page() {
                     )})}
 
                     {groupedOrders[statusKey].length === 0 && (
-                      <div style={{ padding: 12, border: "1px dashed var(--border)", borderRadius: 12, color: "var(--muted)", fontSize: FONT_SCALE.sm }}>
+                      <div
+                        style={{
+                          padding: 16,
+                          border: "1px dashed var(--border)",
+                          borderRadius: 12,
+                          color: "var(--muted)",
+                          fontSize: FONT_SCALE.sm,
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: "center",
+                          gap: 8,
+                        }}
+                      >
+                        <span
+                          className="material-symbols-rounded"
+                          style={{ fontSize: 28, opacity: 0.6 }}
+                          aria-hidden
+                        >
+                          receipt_long
+                        </span>
                         Sem pedidos nesta coluna.
                       </div>
                     )}
@@ -2375,16 +2413,7 @@ export default function Page() {
 
                 <button
                   style={btnDanger}
-                  onClick={() => {
-                    if (confirm("Apagar todos os dados salvos no navegador?")) {
-                      setIngredients([]);
-                      setDrinks([]);
-                      setSettings({ ...DEFAULT_SETTINGS });
-                      setActiveDrinkId(null);
-                      setActiveIngredientId(null);
-                      setTab("receitas");
-                    }
-                  }}
+                  onClick={() => setConfirmReset(true)}
                 >
                   Resetar tudo
                 </button>
@@ -2407,13 +2436,10 @@ export default function Page() {
                     type="file"
                     accept=".csv,text/csv"
                     style={{ display: "none" }}
-                    onChange={async (e) => {
+                    onChange={(e) => {
                       const file = e.target.files?.[0];
                       if (!file) return;
-
-                      const shouldReplace = confirm("Importar CSV e substituir os dados atuais?");
-                      if (shouldReplace) await importFromCsvFile(file);
-
+                      setConfirmImportFile(file);
                       e.currentTarget.value = "";
                     }}
                   />
@@ -2571,8 +2597,7 @@ export default function Page() {
       disabled={!activeDrink.photoDataUrl}
       onClick={() => {
         if (!activeDrink.photoDataUrl) return;
-        if (!confirm("Remover a foto deste drink?")) return;
-        updateDrink(activeDrink.id, { photoDataUrl: undefined });
+        setConfirmRemovePhoto(activeDrink.id);
       }}
     >
       Remover foto
@@ -2627,11 +2652,7 @@ export default function Page() {
                         </button>
                         <button
                           style={iconBtnDanger}
-                          onClick={() => {
-                            const shouldRemove = confirm(`Remover o drink "${activeDrink.name || "Sem nome"}"?`);
-                            if (!shouldRemove) return;
-                            removeDrink(activeDrink.id);
-                          }}
+                          onClick={() => setConfirmRemoveDrink(activeDrink)}
                           aria-label="Remover drink"
                           title="Remover drink"
                         >
@@ -2752,8 +2773,31 @@ export default function Page() {
                     </div>
                   ))}
                   {activeCategoryIngredients.length === 0 && (
-                    <div style={{ ...small, padding: "8px 2px" }}>
-                      Nenhum ingrediente nesta categoria.
+                    <div
+                      style={{
+                        padding: 16,
+                        textAlign: "center",
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        gap: 10,
+                      }}
+                    >
+                      <span
+                        className="material-symbols-rounded"
+                        style={{ fontSize: 32, color: "var(--muted)", opacity: 0.7 }}
+                        aria-hidden
+                      >
+                        inventory_2
+                      </span>
+                      <div style={{ ...small }}>Nenhum ingrediente nesta categoria.</div>
+                      <button
+                        style={{ ...btn, fontSize: FONT_SCALE.sm, padding: "6px 12px", display: "inline-flex", alignItems: "center", gap: 6 }}
+                        onClick={addIngredient}
+                      >
+                        <span className="material-symbols-rounded" style={{ fontSize: 16 }} aria-hidden>add</span>
+                        Adicionar ingrediente
+                      </button>
                     </div>
                   )}
                 </ScrollShadow>
@@ -2903,11 +2947,7 @@ export default function Page() {
                       </button>
                       <button
                         style={iconBtnDanger}
-                        onClick={() => {
-                          const shouldRemove = confirm(`Remover o ingrediente "${activeIngredient.name || "Sem nome"}"?`);
-                          if (!shouldRemove) return;
-                          removeIngredient(activeIngredient.id);
-                        }}
+                        onClick={() => setConfirmRemoveIngredient(activeIngredient)}
                         aria-label="Remover ingrediente"
                         title="Remover ingrediente"
                       >
@@ -2921,6 +2961,89 @@ export default function Page() {
           </div>
         )}
       </div>
+
+      <ConfirmModal
+        open={confirmReset}
+        onClose={() => setConfirmReset(false)}
+        onConfirm={() => {
+          setIngredients([]);
+          setDrinks([]);
+          setSettings({ ...DEFAULT_SETTINGS });
+          setActiveDrinkId(null);
+          setActiveIngredientId(null);
+          setTab("receitas");
+          setConfirmReset(false);
+          addToast("Dados resetados.");
+        }}
+        title="Resetar tudo"
+        message="Apagar todos os dados salvos no navegador? Esta ação não pode ser desfeita."
+        confirmLabel="Resetar"
+        variant="danger"
+      />
+
+      <ConfirmModal
+        open={Boolean(confirmImportFile)}
+        onClose={() => setConfirmImportFile(null)}
+        onConfirm={async () => {
+          const file = confirmImportFile;
+          if (file) {
+            await importFromCsvFile(file);
+            setConfirmImportFile(null);
+            addToast("CSV importado com sucesso!");
+          }
+        }}
+        title="Importar CSV"
+        message="Importar CSV e substituir os dados atuais?"
+        confirmLabel="Importar"
+      />
+
+      <ConfirmModal
+        open={Boolean(confirmRemovePhoto)}
+        onClose={() => setConfirmRemovePhoto(null)}
+        onConfirm={() => {
+          if (confirmRemovePhoto) {
+            updateDrink(confirmRemovePhoto, { photoDataUrl: undefined });
+            setConfirmRemovePhoto(null);
+            addToast("Foto removida.");
+          }
+        }}
+        title="Remover foto"
+        message="Remover a foto deste drink?"
+        confirmLabel="Remover"
+        variant="danger"
+      />
+
+      <ConfirmModal
+        open={Boolean(confirmRemoveDrink)}
+        onClose={() => setConfirmRemoveDrink(null)}
+        onConfirm={() => {
+          if (confirmRemoveDrink) {
+            removeDrink(confirmRemoveDrink.id);
+            setConfirmRemoveDrink(null);
+            addToast("Drink removido.");
+          }
+        }}
+        title="Remover drink"
+        message={confirmRemoveDrink ? `Remover o drink "${confirmRemoveDrink.name || "Sem nome"}"?` : ""}
+        confirmLabel="Remover"
+        variant="danger"
+      />
+
+      <ConfirmModal
+        open={Boolean(confirmRemoveIngredient)}
+        onClose={() => setConfirmRemoveIngredient(null)}
+        onConfirm={() => {
+          if (confirmRemoveIngredient) {
+            removeIngredient(confirmRemoveIngredient.id);
+            setConfirmRemoveIngredient(null);
+            addToast("Ingrediente removido.");
+          }
+        }}
+        title="Remover ingrediente"
+        message={confirmRemoveIngredient ? `Remover o ingrediente "${confirmRemoveIngredient.name || "Sem nome"}"?` : ""}
+        confirmLabel="Remover"
+        variant="danger"
+      />
     </div>
   );
 }

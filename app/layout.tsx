@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { JetBrains_Mono, Space_Grotesk } from "next/font/google";
 import "./globals.css";
+import { ToastProvider } from "./components/ToastContext";
 
 const appSans = Space_Grotesk({
   subsets: ["latin"],
@@ -35,7 +36,7 @@ export default function RootLayout({
         />
       </head>
       <body className={`${appSans.variable} ${appMono.variable} antialiased`}>
-        {children}
+        <ToastProvider>{children}</ToastProvider>
       </body>
     </html>
   );

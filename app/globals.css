@@ -56,6 +56,10 @@ textarea:focus-visible {
   outline-offset: 2px;
 }
 
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 .material-symbols-rounded {
   font-family: "Material Symbols Rounded";
   font-weight: normal;

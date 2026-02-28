@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AdminHeader } from "@/app/components/AdminHeader";
 import {
   AUTO_PRINT_STORAGE_KEY,
   PRINT_MODE_STORAGE_KEY,
@@ -48,8 +49,8 @@ type ActiveSession = {
 };
 
 const FONT_SCALE = {
-  sm: 12,
-  md: 14,
+  sm: 14,
+  md: 16,
   lg: 20,
 } as const;
 const BAR_LOGO_PATH = "/manteca-logo.svg";
@@ -773,24 +774,14 @@ export default function AdminOrdersPage() {
       </div>
 
       <div className="app-shell" style={container}>
-        <div style={{ ...card, marginBottom: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-            <div>
-              <h1 style={{ margin: 0, fontSize: FONT_SCALE.lg }}>Pedidos</h1>
-              <div style={small}>Operação da cozinha/bar em tempo real</div>
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Link href="/admin" style={{ ...btn, textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
-                Área interna
-              </Link>
-              <Link href="/admin/mesas" style={{ ...btn, textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
-                Mesas
-              </Link>
+        <AdminHeader
+          title="Pedidos"
+          subtitle="Operação da cozinha/bar em tempo real"
+          currentPage="pedidos"
+          actions={
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
               <Link href="/" style={{ ...btn, textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
                 Cardápio público
-              </Link>
-              <Link href="/admin/pedidos/historico" style={{ ...btn, textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
-                Histórico
               </Link>
               <button style={btn} onClick={() => void loadOrders()} disabled={ordersLoading || Boolean(updatingOrderId)}>
                 {ordersLoading ? "Atualizando..." : "Atualizar"}
@@ -809,8 +800,11 @@ export default function AdminOrdersPage() {
                 {sessionLoading ? "Processando..." : activeSession ? "Fechar bar" : "Abrir bar"}
               </button>
             </div>
-          </div>
-          <div style={{ ...small, marginTop: 8 }}>
+          }
+        />
+
+        <div style={{ ...card, marginBottom: 12 }}>
+          <div style={{ ...small, marginTop: 0 }}>
             {activeSession ? `Sessão aberta: ${activeSession.code}` : "Bar fechado"} • {orders.length} pedido(s)
           </div>
           <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
@@ -994,7 +988,26 @@ export default function AdminOrdersPage() {
                 })}
 
                 {groupedOrders[statusKey].length === 0 && (
-                  <div style={{ padding: 12, border: "1px dashed var(--border)", borderRadius: 12, color: "var(--muted)", fontSize: FONT_SCALE.sm }}>
+                  <div
+                    style={{
+                      padding: 16,
+                      border: "1px dashed var(--border)",
+                      borderRadius: 12,
+                      color: "var(--muted)",
+                      fontSize: FONT_SCALE.sm,
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      gap: 8,
+                    }}
+                  >
+                    <span
+                      className="material-symbols-rounded"
+                      style={{ fontSize: 28, opacity: 0.6 }}
+                      aria-hidden
+                    >
+                      receipt_long
+                    </span>
                     Sem pedidos nesta coluna.
                   </div>
                 )}

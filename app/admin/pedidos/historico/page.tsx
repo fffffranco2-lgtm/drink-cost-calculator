@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import React, { useCallback, useEffect, useState } from "react";
+import { AdminHeader } from "@/app/components/AdminHeader";
 
 type SessionHistoryRow = {
   id: string;
@@ -106,7 +107,7 @@ export default function OrdersHistoryPage() {
     borderRadius: 16,
     padding: 14,
   };
-  const small: React.CSSProperties = { fontSize: 12, color: "var(--muted)" };
+  const small: React.CSSProperties = { fontSize: 14, color: "var(--muted)" };
   const btn: React.CSSProperties = {
     border: "1px solid var(--border)",
     borderRadius: 10,
@@ -130,35 +131,24 @@ export default function OrdersHistoryPage() {
     textDecoration: "none",
     display: "inline-flex",
     alignItems: "center",
-    fontSize: 12,
+    fontSize: 14,
   };
 
   return (
     <div style={page}>
       <div style={container}>
-        <div style={{ ...card, marginBottom: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-            <div>
-              <h1 style={{ margin: 0, fontSize: 20 }}>Histórico de Pedidos</h1>
-              <div style={small}>Visualização em árvore de sessões e pedidos</div>
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Link href="/admin/pedidos" style={btn}>
-                Pedidos em tempo real
-              </Link>
-              <Link href="/admin/mesas" style={btn}>
-                Mesas
-              </Link>
-              <Link href="/admin" style={btn}>
-                Área interna
-              </Link>
-              <button style={btn} onClick={() => void loadHistory()} disabled={loading}>
-                {loading ? "Atualizando..." : "Atualizar"}
-              </button>
-            </div>
-          </div>
-          {error ? <div style={{ ...small, color: "#b00020", marginTop: 8 }}>{error}</div> : null}
-        </div>
+        <AdminHeader
+          title="Histórico de Pedidos"
+          subtitle="Visualização em árvore de sessões e pedidos"
+          currentPage="historico"
+          actions={
+            <button style={btn} onClick={() => void loadHistory()} disabled={loading}>
+              {loading ? "Atualizando..." : "Atualizar"}
+            </button>
+          }
+        />
+
+        {error ? <div style={{ marginBottom: 12, ...small, color: "#b00020", padding: 10, borderRadius: 10, border: "1px solid #f0c2c2", background: "#fff1f1" }}>{error}</div> : null}
 
         <div style={{ ...card, fontFamily: 'var(--font-app-mono), "JetBrains Mono", "SFMono-Regular", Menlo, monospace' }}>
           {sessions.length === 0 ? (
