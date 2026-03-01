@@ -1487,7 +1487,7 @@ export default function PublicMenuPage() {
 
                   <textarea
                     style={{ ...input, resize: "vertical", minHeight: 84 }}
-                    placeholder="Observações do pedido (opcional)"
+                    placeholder="Obs. Gerais"
                     value={orderNotes}
                     onChange={(e) => setOrderNotes(e.target.value)}
                     maxLength={400}

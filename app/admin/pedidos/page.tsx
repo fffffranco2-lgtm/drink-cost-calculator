@@ -3,15 +3,31 @@
 import Link from "next/link";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  internalButtonStyle,
+  internalCardStyle,
+  internalFocusStyle,
+  internalHeaderCardStyle,
+  internalPageStyle,
+  internalSmallTextStyle,
+} from "@/app/admin/internal-theme";
+import {
   AUTO_PRINT_STORAGE_KEY,
-  PRINT_MODE_STORAGE_KEY,
   QZ_PRINTER_STORAGE_KEY,
-  type PrintMode,
   type QzApi,
   type QzConnectionState,
-  type QzPrintConfigOptions,
-  type QzPrintData,
+  type QzTextSizePreset,
 } from "@/lib/qz-tray";
+import {
+  DEFAULT_LAYOUT_LOGO_PATH,
+  defaultPrintLayout,
+  getActiveLayoutIdFromStorage,
+  getLayoutsFromStorage,
+  resolveActiveLayout,
+  type PrintAlign,
+  type PrintDataKey,
+  type PrintLayout,
+  type PrintLayoutBlock,
+} from "@/lib/print-layouts";
 
 type OrderStatus = "pendente" | "em_progresso" | "concluido";
 type OrderSource = "mesa_qr" | "balcao";
@@ -52,7 +68,27 @@ const FONT_SCALE = {
   md: 14,
   lg: 20,
 } as const;
-const BAR_LOGO_PATH = "/manteca-logo.svg";
+const ESC_POS_LINE_WIDTH = 32;
+
+const QZ_SIZE_TO_SCALE: Record<QzTextSizePreset, number> = {
+  normal: 1,
+  "2x": 2,
+  "3x": 3,
+};
+
+const QZ_SIZE_TO_ESC_POS: Record<QzTextSizePreset, string> = {
+  normal: "\x1D\x21\x00",
+  "2x": "\x1D\x21\x11",
+  "3x": "\x1D\x21\x22",
+};
+
+type ComposeElementKind = "customer" | "items" | "items_count" | "total";
+const COMPOSE_DEFAULTS: Record<ComposeElementKind, { left: string[]; right: string[] }> = {
+  customer: { left: ["customer_name"], right: ["customer_phone"] },
+  items: { left: ["item_qty_price"], right: ["item_total"] },
+  items_count: { left: ["items_label"], right: ["items_count"] },
+  total: { left: ["total_label"], right: ["total_value"] },
+};
 
 function formatBRL(value: number) {
   return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -89,6 +125,112 @@ function toLatin1Safe(value: string) {
   return output;
 }
 
+function columnsForSize(baseWidth: number, preset: QzTextSizePreset) {
+  return Math.max(8, Math.floor(baseWidth / QZ_SIZE_TO_SCALE[preset]));
+}
+
+function fitPresetToContent(baseWidth: number, preferred: QzTextSizePreset, minColumns: number): QzTextSizePreset {
+  let preset = preferred;
+  while (preset !== "normal" && columnsForSize(baseWidth, preset) < minColumns) {
+    preset = preset === "3x" ? "2x" : "normal";
+  }
+  return preset;
+}
+
+function buildEscPosBitImage24(raster: Uint8Array, widthDots: number, heightDots: number) {
+  const out: string[] = [];
+  const widthBytes = widthDots / 8;
+  const getPixel = (x: number, y: number) => {
+    const byte = raster[y * widthBytes + (x >> 3)];
+    return (byte & (0x80 >> (x & 7))) !== 0;
+  };
+
+  out.push("\x1B\x61\x01"); // center
+  out.push("\x1B\x33\x18"); // line spacing = 24
+
+  for (let y = 0; y < heightDots; y += 24) {
+    out.push(`\x1B\x2A\x21${String.fromCharCode(widthDots & 0xff, (widthDots >> 8) & 0xff)}`);
+    for (let x = 0; x < widthDots; x += 1) {
+      for (let band = 0; band < 3; band += 1) {
+        let slice = 0;
+        for (let bit = 0; bit < 8; bit += 1) {
+          const yy = y + band * 8 + bit;
+          if (yy >= heightDots) continue;
+          if (getPixel(x, yy)) slice |= 0x80 >> bit;
+        }
+        out.push(String.fromCharCode(slice));
+      }
+    }
+    out.push("\n");
+  }
+
+  out.push("\x1B\x32"); // default line spacing
+  out.push("\x1B\x61\x00"); // left
+  return out.join("");
+}
+
+async function buildEscPosRasterLogo(imagePath: string, maxWidthDots = 384, maxHeightDots = 160) {
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const el = new Image();
+    el.decoding = "async";
+    el.crossOrigin = "anonymous";
+    el.onload = () => resolve(el);
+    el.onerror = () => reject(new Error("Falha ao carregar logo para impressão."));
+    el.src = imagePath;
+  });
+
+  const sourceWidth = image.naturalWidth || image.width;
+  const sourceHeight = image.naturalHeight || image.height;
+  if (!sourceWidth || !sourceHeight) {
+    throw new Error("Logo sem dimensões válidas para impressão.");
+  }
+
+  let targetWidth = Math.max(8, Math.floor(Math.min(maxWidthDots, sourceWidth) / 8) * 8);
+  let targetHeight = Math.max(8, Math.round((sourceHeight * targetWidth) / sourceWidth));
+  if (targetHeight > maxHeightDots) {
+    const scale = maxHeightDots / targetHeight;
+    targetHeight = maxHeightDots;
+    targetWidth = Math.max(8, Math.floor((targetWidth * scale) / 8) * 8);
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) {
+    throw new Error("Contexto 2D indisponível para rasterizar logo.");
+  }
+
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, targetWidth, targetHeight);
+  ctx.drawImage(image, 0, 0, targetWidth, targetHeight);
+
+  const imageData = ctx.getImageData(0, 0, targetWidth, targetHeight).data;
+  const widthBytes = targetWidth / 8;
+  const raster = new Uint8Array(widthBytes * targetHeight);
+
+  for (let y = 0; y < targetHeight; y++) {
+    for (let xByte = 0; xByte < widthBytes; xByte++) {
+      let byte = 0;
+      for (let bit = 0; bit < 8; bit++) {
+        const x = xByte * 8 + bit;
+        const offset = (y * targetWidth + x) * 4;
+        const r = imageData[offset];
+        const g = imageData[offset + 1];
+        const b = imageData[offset + 2];
+        const alpha = imageData[offset + 3] / 255;
+        const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+        const composite = 255 - alpha * (255 - luminance);
+        if (composite < 160) {
+          byte |= 0x80 >> bit;
+        }
+      }
+      raster[y * widthBytes + xByte] = byte;
+    }
+  }
+
+  return buildEscPosBitImage24(raster, targetWidth, targetHeight);
+}
+
 function wrapText(text: string, width: number) {
   if (width <= 0) return [text];
   const parts: string[] = [];
@@ -116,13 +258,33 @@ function wrapText(text: string, width: number) {
 }
 
 function leftRightLine(left: string, right: string, width: number) {
-  const safeLeft = left.trim();
-  const safeRight = right.trim();
+  const safeLeft = left.replace(/\s+/g, " ").trim();
+  const safeRight = right.replace(/\s+/g, " ").trim();
   const minGap = 1;
   const maxLeftLen = Math.max(0, width - safeRight.length - minGap);
   const croppedLeft = safeLeft.length > maxLeftLen ? safeLeft.slice(0, maxLeftLen) : safeLeft;
   const spaces = Math.max(minGap, width - croppedLeft.length - safeRight.length);
   return `${croppedLeft}${" ".repeat(spaces)}${safeRight}`;
+}
+
+function effectiveComposeParts(block: PrintLayoutBlock, kind: ComposeElementKind) {
+  const defaults = COMPOSE_DEFAULTS[kind];
+  const left = Array.isArray(block.composeLeft) && block.composeLeft.length ? block.composeLeft : defaults.left;
+  const right = Array.isArray(block.composeRight) && block.composeRight.length ? block.composeRight : defaults.right;
+  return { left, right };
+}
+
+function composeFromParts(parts: string[], values: Record<string, string>) {
+  return parts
+    .map((part) => values[part] ?? "")
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isItemDataKey(key?: PrintDataKey) {
+  return Boolean(key && key.startsWith("item_"));
 }
 
 function centerLine(text: string, width: number) {
@@ -132,57 +294,383 @@ function centerLine(text: string, width: number) {
   return `${" ".repeat(leftPadding)}${safe}`;
 }
 
-function buildEscPosTicket(order: AdminOrder) {
-  const width = 32;
+function alignLine(text: string, width: number, align: PrintAlign) {
+  const safe = text.trim();
+  if (align === "right") {
+    if (safe.length >= width) return safe.slice(0, width);
+    return `${" ".repeat(width - safe.length)}${safe}`;
+  }
+  if (align === "center") return centerLine(safe, width);
+  if (safe.length >= width) return safe.slice(0, width);
+  return safe;
+}
+
+function fitTextToColumns(text: string, maxColumns: number, align: PrintAlign) {
+  const safe = text.replace(/\s+/g, " ").trim();
+  const clipped = Array.from(safe).slice(0, Math.max(0, maxColumns)).join("");
+  const used = clipped.length;
+  const spaces = Math.max(0, maxColumns - used);
+  if (align === "right") return `${" ".repeat(spaces)}${clipped}`;
+  if (align === "center") {
+    const leftPadding = Math.floor(spaces / 2);
+    const rightPadding = spaces - leftPadding;
+    return `${" ".repeat(leftPadding)}${clipped}${" ".repeat(rightPadding)}`;
+  }
+  return `${clipped}${" ".repeat(spaces)}`;
+}
+
+function twoColumnLine(left: string, right: string, width: number, leftAlign: PrintAlign, rightAlign: PrintAlign) {
+  const leftWidth = Math.max(1, Math.floor(width / 2));
+  const rightWidth = Math.max(1, width - leftWidth);
+  return `${fitTextToColumns(left, leftWidth, leftAlign)}${fitTextToColumns(right, rightWidth, rightAlign)}`;
+}
+
+function glyphColumnWidth(char: string) {
+  const code = char.codePointAt(0) ?? 0;
+  if (!code) return 1;
+  if (
+    code >= 0x1100 &&
+    (code <= 0x115f ||
+      code === 0x2329 ||
+      code === 0x232a ||
+      (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe10 && code <= 0xfe19) ||
+      (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6))
+  ) {
+    return 2;
+  }
+  return 1;
+}
+
+function separatorLine(charInput: string | undefined, width: number) {
+  const char = Array.from(charInput?.trim() || "")[0] || "-";
+  const charWidth = Math.max(1, glyphColumnWidth(char));
+  const repeatCount = Math.max(1, Math.floor(width / charWidth));
+  return char.repeat(repeatCount);
+}
+
+function escPosAlignCommand(align: PrintAlign) {
+  if (align === "center") return "\x1B\x61\x01";
+  if (align === "right") return "\x1B\x61\x02";
+  return "\x1B\x61\x00";
+}
+
+function readActivePrintLayout(): PrintLayout {
+  try {
+    const layouts = getLayoutsFromStorage();
+    const activeLayoutId = getActiveLayoutIdFromStorage();
+    return resolveActiveLayout(layouts, activeLayoutId);
+  } catch {
+    return defaultPrintLayout();
+  }
+}
+
+function isLikelyVirtualPrinter(name: string) {
+  const n = name.trim().toLowerCase();
+  return n.includes("fax") || n.includes("pdf") || n.includes("xps");
+}
+
+function choosePreferredPrinter(candidates: string[]) {
+  const cleaned = candidates.map((name) => name.trim()).filter(Boolean);
+  if (!cleaned.length) return "";
+  const nonVirtual = cleaned.find((name) => !isLikelyVirtualPrinter(name));
+  return nonVirtual ?? cleaned[0];
+}
+
+async function buildEscPosTicket(order: AdminOrder, layout: PrintLayout) {
+  const width = ESC_POS_LINE_WIDTH;
   const nl = "\n";
   const sourceText = order.source === "mesa_qr" && order.tableCode ? `Mesa ${order.tableCode}` : "Balcao";
   const customerName = order.customerName || "Cliente nao informado";
-  const phone = order.customerPhone ? ` - ${order.customerPhone}` : "";
+  const phone = order.customerPhone ? order.customerPhone : "";
   const createdAt = new Date(order.createdAt).toLocaleString("pt-BR");
+  const totalText = toLatin1Safe(formatBRLPrint(order.subtotal));
+  const itemsCountText = String(order.items.reduce((acc, item) => acc + item.qty, 0));
 
   const out: string[] = [];
-  out.push("\x1B\x40"); // init
-  out.push("\x1B\x45\x01"); // bold on
-  out.push("\x1B\x61\x01");
-  out.push(`${toLatin1Safe(centerLine("PEDIDO", width))}${nl}`);
-  out.push(`${toLatin1Safe(centerLine(order.code, width))}${nl}`);
-  out.push("\x1B\x45\x00"); // bold off
-  out.push("\x1B\x61\x00");
-  out.push(`${"=".repeat(width)}${nl}`);
-  out.push(`${toLatin1Safe(createdAt)}${nl}`);
-  out.push(`${toLatin1Safe(sourceText)}${nl}`);
-  out.push(`${toLatin1Safe(customerName + phone)}${nl}`);
-  out.push(`${"-".repeat(width)}${nl}`);
 
-  for (const item of order.items) {
-    const name = toLatin1Safe(item.drinkName);
-    const qtyPrice = toLatin1Safe(`${item.qty} x ${formatBRLPrint(item.unitPrice)}`);
-    const total = toLatin1Safe(formatBRLPrint(item.lineTotal));
-    for (const line of wrapText(name, width)) {
-      out.push(`${line}${nl}`);
-    }
-    out.push(`${leftRightLine(`  ${qtyPrice}`, total, width)}${nl}`);
-    const notes = item.drinkNotes ?? item.notes;
-    if (notes) {
-      for (const line of wrapText(`obs: ${toLatin1Safe(notes)}`, width - 2)) {
-        out.push(`  ${line}${nl}`);
+  const orderFieldValue = (key: PrintDataKey, block: PrintLayoutBlock) => {
+    if (key === "code") return toLatin1Safe(order.code);
+    if (key === "datetime") return toLatin1Safe(createdAt);
+    if (key === "source") return toLatin1Safe(sourceText);
+    if (key === "customer_name") return toLatin1Safe(customerName);
+    if (key === "customer_phone") return toLatin1Safe(phone);
+    if (key === "items_label") return "ITENS";
+    if (key === "items_count") return itemsCountText;
+    if (key === "total_label") return toLatin1Safe(block.text?.trim() || "TOTAL");
+    if (key === "total_value") return totalText;
+    if (key === "order_notes") return toLatin1Safe(order.notes ?? "");
+    return "";
+  };
+
+  const itemFieldValue = (key: PrintDataKey, item: AdminOrderItem) => {
+    if (key === "item_name") return toLatin1Safe(item.drinkName);
+    if (key === "item_qty") return toLatin1Safe(String(item.qty));
+    if (key === "item_unit_price") return toLatin1Safe(formatBRLPrint(item.unitPrice));
+    if (key === "item_qty_price") return toLatin1Safe(`${item.qty} x ${formatBRLPrint(item.unitPrice)}`);
+    if (key === "item_total") return toLatin1Safe(formatBRLPrint(item.lineTotal));
+    if (key === "item_notes") return toLatin1Safe(item.drinkNotes ?? item.notes ?? "");
+    return "";
+  };
+
+  const printTextBlock = (
+    block: PrintLayoutBlock,
+    text: string,
+    defaults?: { align?: PrintAlign; size?: QzTextSizePreset; bold?: boolean; allowWrap?: boolean }
+  ) => {
+    const align = block.align ?? defaults?.align ?? "left";
+    const allowWrap = defaults?.allowWrap ?? false;
+    const normalizedText = toLatin1Safe(text).replace(/\s*\r?\n\s*/g, " ").replace(/\s+/g, " ").trim();
+    const rawSize = block.size ?? defaults?.size ?? "normal";
+    const minColumns = allowWrap
+      ? Math.max(...wrapText(normalizedText, width).map((line) => line.length), 1)
+      : Math.max(normalizedText.length, 1);
+    const size = fitPresetToContent(width, rawSize, minColumns);
+    const blockWidth = columnsForSize(width, size);
+    const bold = block.bold ?? defaults?.bold ?? false;
+    out.push(escPosAlignCommand(align));
+    out.push(QZ_SIZE_TO_ESC_POS[size]);
+    out.push(bold ? "\x1B\x45\x01" : "\x1B\x45\x00");
+    if (allowWrap) {
+      for (const line of wrapText(normalizedText, blockWidth)) {
+        out.push(`${alignLine(line, blockWidth, align)}${nl}`);
       }
+    } else {
+      out.push(`${alignLine(normalizedText, blockWidth, align)}${nl}`);
     }
-    out.push(nl);
+    out.push("\x1B\x61\x00");
+    out.push(QZ_SIZE_TO_ESC_POS.normal);
+    out.push("\x1B\x45\x00");
+  };
+
+  for (const block of layout.blocks) {
+    if (block.kind === "logo") {
+      const logoPath = block.logoPath?.trim() || DEFAULT_LAYOUT_LOGO_PATH;
+      try {
+        out.push(await buildEscPosRasterLogo(logoPath));
+        out.push(nl);
+      } catch {
+        // ignora erro de logo para não bloquear a impressão
+      }
+      continue;
+    }
+    if (block.kind === "blank") {
+      out.push(nl);
+      continue;
+    }
+    if (block.kind === "separator") {
+      const align = block.align ?? "left";
+      const size = block.size ?? "normal";
+      const blockWidth = columnsForSize(width, size);
+      const separator = separatorLine(block.separatorChar, blockWidth);
+      out.push(escPosAlignCommand(align));
+      out.push(QZ_SIZE_TO_ESC_POS[size]);
+      out.push("\x1B\x45\x00");
+      out.push(`${align === "left" ? separator : alignLine(separator, blockWidth, align)}${nl}`);
+      out.push("\x1B\x61\x00");
+      out.push(QZ_SIZE_TO_ESC_POS.normal);
+      continue;
+    }
+    if (block.kind === "title") {
+      printTextBlock(block, block.text?.trim() || "PEDIDO", { align: "center", size: block.size ?? "2x", bold: true });
+      continue;
+    }
+    if (block.kind === "code") {
+      printTextBlock(block, order.code, { align: "center", bold: true });
+      continue;
+    }
+    if (block.kind === "datetime") {
+      printTextBlock(block, createdAt);
+      continue;
+    }
+    if (block.kind === "source") {
+      printTextBlock(block, sourceText);
+      continue;
+    }
+    if (block.kind === "data") {
+      const dataKey = block.dataKey ?? "code";
+      const align = block.align ?? "left";
+      const size = block.size ?? "normal";
+      const blockWidth = columnsForSize(width, size);
+      const bold = block.bold ?? false;
+      out.push(escPosAlignCommand(align));
+      out.push(QZ_SIZE_TO_ESC_POS[size]);
+      out.push(bold ? "\x1B\x45\x01" : "\x1B\x45\x00");
+      if (isItemDataKey(dataKey)) {
+        for (const item of order.items) {
+          const text = itemFieldValue(dataKey, item);
+          if (!text) continue;
+          if (dataKey === "item_notes") {
+            for (const line of wrapText(text, blockWidth)) {
+              out.push(`${alignLine(line, blockWidth, align)}${nl}`);
+            }
+          } else {
+            out.push(`${alignLine(text, blockWidth, align)}${nl}`);
+          }
+        }
+      } else {
+        const text = orderFieldValue(dataKey, block);
+        if (text) {
+          if (dataKey === "order_notes") {
+            for (const line of wrapText(text, blockWidth)) {
+              out.push(`${alignLine(line, blockWidth, align)}${nl}`);
+            }
+          } else {
+            out.push(`${alignLine(text, blockWidth, align)}${nl}`);
+          }
+        }
+      }
+      out.push("\x1B\x61\x00");
+      out.push(QZ_SIZE_TO_ESC_POS.normal);
+      out.push("\x1B\x45\x00");
+      continue;
+    }
+    if (block.kind === "row_2col") {
+      const leftKey = block.leftDataKey ?? "items_label";
+      const rightKey = block.rightDataKey ?? "items_count";
+      const leftAlign = block.leftAlign ?? block.align ?? "left";
+      const rightAlign = block.rightAlign ?? (block.align === "center" ? "center" : "right");
+      const leftSize = block.leftSize ?? block.size ?? "normal";
+      const rightSize = block.rightSize ?? block.size ?? "normal";
+      const preferredSize = leftSize === rightSize ? leftSize : "normal";
+      const leftBold = block.leftBold ?? block.bold ?? false;
+      const rightBold = block.rightBold ?? block.bold ?? false;
+      const bold = leftBold === rightBold ? leftBold : leftBold || rightBold;
+
+      const lines: Array<{ left: string; right: string }> = [];
+      if (isItemDataKey(leftKey) || isItemDataKey(rightKey)) {
+        for (const item of order.items) {
+          const left = isItemDataKey(leftKey) ? itemFieldValue(leftKey, item) : orderFieldValue(leftKey, block);
+          const right = isItemDataKey(rightKey) ? itemFieldValue(rightKey, item) : orderFieldValue(rightKey, block);
+          if (!left && !right) continue;
+          lines.push({ left, right });
+        }
+      } else {
+        const left = orderFieldValue(leftKey, block);
+        const right = orderFieldValue(rightKey, block);
+        if (left || right) lines.push({ left, right });
+      }
+      if (!lines.length) continue;
+
+      const minColumns = lines.reduce((max, line) => Math.max(max, line.left.length + line.right.length + 1), 1);
+      const size = fitPresetToContent(width, preferredSize, minColumns);
+      const blockWidth = columnsForSize(width, size);
+      out.push(escPosAlignCommand("left"));
+      out.push(QZ_SIZE_TO_ESC_POS[size]);
+      out.push(bold ? "\x1B\x45\x01" : "\x1B\x45\x00");
+      for (const line of lines) {
+        out.push(`${twoColumnLine(line.left, line.right, blockWidth, leftAlign, rightAlign)}${nl}`);
+      }
+      out.push("\x1B\x61\x00");
+      out.push(QZ_SIZE_TO_ESC_POS.normal);
+      out.push("\x1B\x45\x00");
+      continue;
+    }
+    if (block.kind === "customer") {
+      const size = block.size ?? "normal";
+      const blockWidth = columnsForSize(width, size);
+      const { left: leftParts, right: rightParts } = effectiveComposeParts(block, "customer");
+      const values = {
+        customer_name: toLatin1Safe(customerName),
+        customer_phone: toLatin1Safe(phone),
+      };
+      const left = composeFromParts(leftParts, values);
+      const right = composeFromParts(rightParts, values);
+      out.push(escPosAlignCommand("left"));
+      out.push(QZ_SIZE_TO_ESC_POS[size]);
+      out.push(block.bold ? "\x1B\x45\x01" : "\x1B\x45\x00");
+      out.push(`${right ? leftRightLine(left, right, blockWidth) : alignLine(left, blockWidth, "left")}${nl}`);
+      out.push("\x1B\x61\x00");
+      out.push(QZ_SIZE_TO_ESC_POS.normal);
+      out.push("\x1B\x45\x00");
+      continue;
+    }
+    if (block.kind === "items") {
+      const size = block.size ?? "normal";
+      const blockWidth = columnsForSize(width, size);
+      const { left: leftParts, right: rightParts } = effectiveComposeParts(block, "items");
+      out.push(escPosAlignCommand("left"));
+      out.push(QZ_SIZE_TO_ESC_POS[size]);
+      out.push("\x1B\x45\x00");
+      for (const item of order.items) {
+        const name = toLatin1Safe(item.drinkName);
+        const qty = toLatin1Safe(String(item.qty));
+        const unitPrice = toLatin1Safe(formatBRLPrint(item.unitPrice));
+        const qtyPrice = toLatin1Safe(`${item.qty} x ${formatBRLPrint(item.unitPrice)}`);
+        const total = toLatin1Safe(formatBRLPrint(item.lineTotal));
+        const values = {
+          item_name: name,
+          item_qty: qty,
+          item_unit_price: unitPrice,
+          item_qty_price: qtyPrice,
+          item_total: total,
+        };
+        const composedLeft = composeFromParts(leftParts, values);
+        const composedRight = composeFromParts(rightParts, values);
+        out.push(`${alignLine(name, blockWidth, "left")}${nl}`);
+        out.push(`${leftRightLine(composedLeft, composedRight, blockWidth)}${nl}`);
+        const notes = item.drinkNotes ?? item.notes;
+        if (notes) {
+          for (const line of wrapText(`obs: ${toLatin1Safe(notes)}`, blockWidth)) {
+            out.push(`${alignLine(line, blockWidth, "left")}${nl}`);
+          }
+        }
+        out.push(nl);
+      }
+      out.push("\x1B\x61\x00");
+      out.push(QZ_SIZE_TO_ESC_POS.normal);
+      continue;
+    }
+    if (block.kind === "items_count") {
+      const size = block.size ?? "normal";
+      const blockWidth = columnsForSize(width, size);
+      const { left: leftParts, right: rightParts } = effectiveComposeParts(block, "items_count");
+      const values = {
+        items_label: "ITENS",
+        items_count: String(order.items.reduce((acc, item) => acc + item.qty, 0)),
+      };
+      out.push(escPosAlignCommand("left"));
+      out.push(QZ_SIZE_TO_ESC_POS[size]);
+      out.push("\x1B\x45\x00");
+      out.push(`${leftRightLine(composeFromParts(leftParts, values), composeFromParts(rightParts, values), blockWidth)}${nl}`);
+      out.push("\x1B\x61\x00");
+      out.push(QZ_SIZE_TO_ESC_POS.normal);
+      continue;
+    }
+    if (block.kind === "notes") {
+      if (!order.notes) continue;
+      printTextBlock(block, `Obs pedido: ${order.notes}`, { allowWrap: true });
+      out.push(nl);
+      continue;
+    }
+    if (block.kind === "total") {
+      const label = toLatin1Safe(block.text?.trim() || "TOTAL");
+      const { left: leftParts, right: rightParts } = effectiveComposeParts(block, "total");
+      const leftText = composeFromParts(leftParts, { total_label: label, total_value: totalText });
+      const rightText = composeFromParts(rightParts, { total_label: label, total_value: totalText });
+      const align = block.align ?? "left";
+      const rawSize = block.size ?? "2x";
+      const size = fitPresetToContent(width, rawSize, rightText.length + leftText.length + 1);
+      const blockWidth = columnsForSize(width, size);
+      out.push(escPosAlignCommand(align));
+      out.push(QZ_SIZE_TO_ESC_POS[size]);
+      out.push(block.bold === false ? "\x1B\x45\x00" : "\x1B\x45\x01");
+      out.push(`${leftRightLine(leftText, rightText, blockWidth)}${nl}`);
+      out.push("\x1B\x61\x00");
+      out.push(QZ_SIZE_TO_ESC_POS.normal);
+      out.push("\x1B\x45\x00");
+      continue;
+    }
+    if (block.kind === "custom") {
+      if (!block.text?.trim()) continue;
+      printTextBlock(block, block.text);
+    }
   }
 
-  out.push(`${"-".repeat(width)}${nl}`);
-  out.push(`${leftRightLine("ITENS", String(order.items.reduce((acc, item) => acc + item.qty, 0)), width)}${nl}`);
-  if (order.notes) {
-    for (const line of wrapText(`Obs pedido: ${toLatin1Safe(order.notes)}`, width)) {
-      out.push(`${line}${nl}`);
-    }
-    out.push(nl);
-  }
-  out.push(`${"=".repeat(width)}${nl}`);
-  out.push("\x1B\x45\x01"); // bold on
-  out.push(`${leftRightLine("TOTAL", toLatin1Safe(formatBRLPrint(order.subtotal)), width)}${nl}`);
-  out.push("\x1B\x45\x00"); // bold off
   out.push(`${nl}${nl}`);
   out.push("\x1D\x56\x41\x10"); // full cut
   return out.join("");
@@ -205,8 +693,6 @@ export default function AdminOrdersPage() {
   const [kanbanViewportMaxHeight, setKanbanViewportMaxHeight] = useState<number | null>(null);
   const [activeSession, setActiveSession] = useState<ActiveSession | null>(null);
   const [sessionLoading, setSessionLoading] = useState(false);
-  const [printOrderState, setPrintOrderState] = useState<AdminOrder | null>(null);
-  const [printMode, setPrintMode] = useState<PrintMode>("qz");
   const [autoPrintEnabled, setAutoPrintEnabled] = useState(false);
   const [qzConnectionState, setQzConnectionState] = useState<QzConnectionState>("disconnected");
   const [qzBusy, setQzBusy] = useState(false);
@@ -413,11 +899,6 @@ export default function AdminOrdersPage() {
     [draggingOrder, moveOrderTo]
   );
 
-  const printOrder = useCallback((order: AdminOrder) => {
-    setPrintOrderState(order);
-    window.setTimeout(() => window.print(), 120);
-  }, []);
-
   const loadQz = useCallback(async () => {
     if (window.qz) return window.qz;
     if (qzLoaderRef.current) return qzLoaderRef.current;
@@ -512,7 +993,16 @@ export default function AdminOrdersPage() {
     } catch {
       // ignorar indisponibilidade de storage
     }
-    if (typedName) return typedName;
+    if (typedName) {
+      const typedFound = await qz.printers.find(typedName);
+      const typedList = typeof typedFound === "string" ? [typedFound] : typedFound;
+      if (Array.isArray(typedList)) {
+        const exactMatch = typedList.find((name) => name.trim().toLowerCase() === typedName.toLowerCase());
+        if (exactMatch?.trim()) return exactMatch.trim();
+        const preferred = choosePreferredPrinter(typedList);
+        if (preferred) return preferred;
+      }
+    }
 
     if (typeof qz.printers.getDefault === "function") {
       const defaultPrinter = await qz.printers.getDefault();
@@ -520,12 +1010,9 @@ export default function AdminOrdersPage() {
     }
 
     const discovered = await qz.printers.find();
-    if (typeof discovered === "string" && discovered.trim()) {
-      return discovered.trim();
-    }
-    if (Array.isArray(discovered) && discovered.length && discovered[0].trim()) {
-      return discovered[0].trim();
-    }
+    const discoveredList = typeof discovered === "string" ? [discovered] : discovered;
+    const resolved = choosePreferredPrinter(discoveredList ?? []);
+    if (resolved) return resolved;
     throw new Error("Nenhuma impressora encontrada pelo QZ Tray.");
   }, []);
 
@@ -542,12 +1029,37 @@ export default function AdminOrdersPage() {
 
       const printerName = await resolveQzPrinter(qz);
       const config = qz.configs.create(printerName, { encoding: "ISO-8859-1", copies: 1 });
-      const ticket = buildEscPosTicket(order);
+      const activeLayout = readActivePrintLayout();
+      const sendRawTicket = async (ticket: string) => {
+        await qz.print(config, [{ type: "raw", format: "command", flavor: "plain", data: ticket }]);
+      };
 
       try {
-        await qz.print(config, [{ type: "raw", format: "command", flavor: "plain", data: ticket }]);
+        const ticket = await buildEscPosTicket(order, activeLayout);
+        await sendRawTicket(ticket);
       } catch {
-        await qz.print(config, [{ type: "raw", format: "plain", data: ticket }]);
+        const fallbackLayout: PrintLayout = {
+          ...activeLayout,
+          blocks: activeLayout.blocks.map((block) => ({
+            ...block,
+            size: "normal",
+            leftSize: "normal",
+            rightSize: "normal",
+          })),
+        };
+        const fallbackTicket = await buildEscPosTicket(order, fallbackLayout);
+        try {
+          await sendRawTicket(fallbackTicket);
+        } catch {
+          const emergencyTicket =
+            "\x1B\x40" +
+            "=== PEDIDO ===\n" +
+            `${toLatin1Safe(order.code)}\n` +
+            `${toLatin1Safe(order.customerName || "Cliente nao informado")}\n` +
+            `${toLatin1Safe(formatBRLPrint(order.subtotal))}\n\n\n` +
+            "\x1D\x56\x41\x10";
+          await sendRawTicket(emergencyTicket);
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Falha ao imprimir via QZ Tray.";
@@ -558,20 +1070,8 @@ export default function AdminOrdersPage() {
     }
   }, [configureQzSecurity, loadQz, resolveQzPrinter]);
 
-  const printOrderWithMode = useCallback(async (order: AdminOrder) => {
-    if (printMode === "qz") {
-      await printOrderViaQz(order);
-      return;
-    }
-    printOrder(order);
-  }, [printMode, printOrderViaQz, printOrder]);
-
   useEffect(() => {
     try {
-      const savedMode = localStorage.getItem(PRINT_MODE_STORAGE_KEY);
-      if (savedMode === "qz" || savedMode === "browser") {
-        setPrintMode(savedMode);
-      }
       const savedAutoPrint = localStorage.getItem(AUTO_PRINT_STORAGE_KEY);
       if (savedAutoPrint === "1") setAutoPrintEnabled(true);
     } catch {
@@ -602,19 +1102,6 @@ export default function AdminOrdersPage() {
   }, [refreshQzWindowConnection]);
 
   useEffect(() => {
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key === PRINT_MODE_STORAGE_KEY) {
-        const nextMode = event.newValue;
-        if (nextMode === "qz" || nextMode === "browser") {
-          setPrintMode(nextMode);
-        }
-      }
-    };
-    window.addEventListener("storage", handleStorage);
-    return () => window.removeEventListener("storage", handleStorage);
-  }, []);
-
-  useEffect(() => {
     if (!orders.length) return;
 
     if (!knownOrdersReadyRef.current) {
@@ -629,18 +1116,10 @@ export default function AdminOrdersPage() {
 
     autoPrintQueueRef.current = autoPrintQueueRef.current.then(async () => {
       for (const order of newPendingOrders) {
-        await printOrderWithMode(order);
+        await printOrderViaQz(order);
       }
     });
-  }, [orders, autoPrintEnabled, printOrderWithMode]);
-
-  useEffect(() => {
-    const handleAfterPrint = () => {
-      setPrintOrderState(null);
-    };
-    window.addEventListener("afterprint", handleAfterPrint);
-    return () => window.removeEventListener("afterprint", handleAfterPrint);
-  }, []);
+  }, [orders, autoPrintEnabled, printOrderViaQz]);
 
   useEffect(() => {
     const updateCompletedBucketMaxHeight = () => {
@@ -665,115 +1144,23 @@ export default function AdminOrdersPage() {
     updateKanbanViewportMaxHeight();
     window.addEventListener("resize", updateKanbanViewportMaxHeight);
     return () => window.removeEventListener("resize", updateKanbanViewportMaxHeight);
-  }, [orders.length, ordersError, printMode, autoPrintEnabled]);
+  }, [orders.length, ordersError, autoPrintEnabled]);
 
-  const page: React.CSSProperties = {
-    ["--bg" as never]: "#f6f8fa",
-    ["--panel" as never]: "#ffffff",
-    ["--ink" as never]: "#141414",
-    ["--muted" as never]: "#67707a",
-    ["--border" as never]: "#d8dee5",
-    background: "var(--bg)",
-    minHeight: "100vh",
-    color: "var(--ink)",
-    padding: 20,
-    fontFamily: 'var(--font-app-sans), "Trebuchet MS", "Segoe UI", sans-serif',
-  };
-
+  const page: React.CSSProperties = { ...internalPageStyle };
   const container: React.CSSProperties = { maxWidth: 1200, margin: "0 auto" };
-  const card: React.CSSProperties = {
-    background: "var(--panel)",
-    border: "1px solid var(--border)",
-    borderRadius: 16,
-    padding: 14,
-  };
-  const small: React.CSSProperties = { fontSize: FONT_SCALE.sm, color: "var(--muted)" };
-  const btn: React.CSSProperties = {
-    border: "1px solid var(--border)",
-    borderRadius: 10,
-    background: "white",
-    padding: "8px 12px",
-    cursor: "pointer",
-    fontWeight: 700,
-    color: "var(--ink)",
-  };
-
-  const printText = useCallback((value: string | null | undefined, fallback = "") => {
-    const raw = typeof value === "string" ? value : fallback;
-    return toLatin1Safe(raw);
-  }, []);
+  const card: React.CSSProperties = { ...internalCardStyle };
+  const headerCard: React.CSSProperties = { ...internalHeaderCardStyle };
+  const small: React.CSSProperties = { ...internalSmallTextStyle, fontSize: FONT_SCALE.sm };
+  const btn: React.CSSProperties = { ...internalButtonStyle, fontWeight: 700 };
 
   return (
     <div style={page}>
-      <style>{`
+      <style>{`${internalFocusStyle}
         @media (max-width: 980px) { .orders-grid { grid-template-columns: 1fr !important; } }
-        .print-ticket-root { display: none; }
-        @media print {
-          @page { size: 58mm auto; margin: 2mm; }
-          .app-shell { display: none !important; }
-          .print-ticket-root {
-            display: block;
-            width: 54mm;
-            color: #000;
-            font-family: "Courier New", Courier, monospace;
-            font-size: 11px;
-          }
-          .print-ticket-logo-wrap { text-align: center; margin-bottom: 4px; }
-          .print-ticket-logo { width: 34mm; height: auto; object-fit: contain; }
-          .print-ticket-title { text-align: center; font-weight: 700; letter-spacing: 0.5px; }
-          .print-ticket-code { text-align: center; font-weight: 700; margin-top: 1px; }
-          .print-ticket-meta { margin-top: 2px; line-height: 1.25; }
-          .print-ticket-item { margin-top: 6px; }
-          .print-ticket-item-name { line-height: 1.2; word-break: break-word; }
-          .print-ticket-line { border-top: 1px dashed #000; margin: 5px 0; }
-          .print-ticket-row { display: flex; justify-content: space-between; gap: 6px; }
-          .print-ticket-notes { margin-left: 8px; margin-top: 1px; font-size: 10px; line-height: 1.2; }
-          .print-ticket-total { margin-top: 6px; font-weight: 700; font-size: 12px; border-top: 1px solid #000; padding-top: 4px; }
-        }
       `}</style>
 
-      <div className="print-ticket-root" aria-hidden={!printOrderState}>
-        {printOrderState ? (
-          <div>
-            <div className="print-ticket-logo-wrap">
-              <img className="print-ticket-logo" src={BAR_LOGO_PATH} alt="Logo do bar" />
-            </div>
-            <div className="print-ticket-title">PEDIDO</div>
-            <div className="print-ticket-code">{printText(printOrderState.code)}</div>
-            <div className="print-ticket-line" />
-            <div className="print-ticket-meta">{printText(new Date(printOrderState.createdAt).toLocaleString("pt-BR"))}</div>
-            <div className="print-ticket-meta">{printText(printOrderState.source === "mesa_qr" && printOrderState.tableCode ? `Mesa ${printOrderState.tableCode}` : "Balcão")}</div>
-            <div className="print-ticket-meta">
-              {printText(printOrderState.customerName, "Cliente não informado")}
-              {printOrderState.customerPhone ? ` - ${printText(printOrderState.customerPhone)}` : ""}
-            </div>
-            <div className="print-ticket-line" />
-            {printOrderState.items.map((item, idx) => (
-              <div key={`print_${printOrderState.id}_${idx}`} className="print-ticket-item">
-                <div className="print-ticket-item-name">{printText(item.drinkName)}</div>
-                <div className="print-ticket-row">
-                  <span>{item.qty} x {formatBRLPrint(item.unitPrice)}</span>
-                  <span>{formatBRLPrint(item.lineTotal)}</span>
-                </div>
-                {item.drinkNotes || item.notes ? <div className="print-ticket-notes">obs: {printText(item.drinkNotes ?? item.notes)}</div> : null}
-              </div>
-            ))}
-            <div className="print-ticket-line" />
-            <div className="print-ticket-row">
-              <span>ITENS</span>
-              <span>{printOrderState.items.reduce((acc, item) => acc + item.qty, 0)}</span>
-            </div>
-            {printOrderState.notes ? <div className="print-ticket-meta">Obs pedido: {printText(printOrderState.notes)}</div> : null}
-            <div className="print-ticket-row print-ticket-total">
-              <span>TOTAL</span>
-              <span>{formatBRLPrint(printOrderState.subtotal)}</span>
-            </div>
-          </div>
-        ) : null}
-      </div>
-
       <div className="app-shell" style={container}>
-        <div style={{ ...card, marginBottom: 12 }}>
+        <div style={{ ...headerCard, marginBottom: 12, position: "relative", paddingRight: 64 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
             <div>
               <h1 style={{ margin: 0, fontSize: FONT_SCALE.lg }}>Pedidos</h1>
@@ -792,11 +1179,28 @@ export default function AdminOrdersPage() {
               <Link href="/admin/pedidos/historico" style={{ ...btn, textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
                 Histórico
               </Link>
-              <button style={btn} onClick={() => void loadOrders()} disabled={ordersLoading || Boolean(updatingOrderId)}>
-                {ordersLoading ? "Atualizando..." : "Atualizar"}
-              </button>
+              <Link
+                href="/admin?tab=settings&settingsTab=impressao"
+                style={{
+                  ...btn,
+                  width: 36,
+                  height: 36,
+                  padding: 0,
+                  borderRadius: 999,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  textDecoration: "none",
+                }}
+                title="Configurações de impressão"
+                aria-label="Configurações de impressão"
+              >
+                <span className="material-symbols-rounded" aria-hidden style={{ fontSize: 18, lineHeight: 1 }}>
+                  settings
+                </span>
+              </Link>
               <button
-                style={{ ...btn, background: activeSession ? "#fef3c7" : "#dcfce7", borderColor: activeSession ? "#e7c981" : "#9fdbab" }}
+                style={{ ...btn, background: activeSession ? "var(--pill)" : "var(--pillActive)", borderColor: activeSession ? "#ddc7aa" : "#b7d9d4" }}
                 onClick={() => {
                   if (activeSession) {
                     void closeBar();
@@ -856,13 +1260,33 @@ export default function AdminOrdersPage() {
                 Autoimprimir pedidos novos
               </label>
             </div>
-            {printMode === "qz" ? (
-              <div style={small}>Impressão direta ESC/POS com encoding ISO-8859-1. Ajustes em Configurações &gt; Impressão.</div>
-            ) : (
-              <div style={small}>Modo fallback usando a janela de impressão do navegador (definido em Configurações &gt; Impressão).</div>
-            )}
+            <div style={small}>Impressão direta ESC/POS com encoding ISO-8859-1. Ajustes em Configurações &gt; Impressão.</div>
           </div>
           {ordersError ? <div style={{ ...small, color: "#b00020", marginTop: 8 }}>{ordersError}</div> : null}
+          <button
+            style={{
+              ...btn,
+              position: "absolute",
+              right: 16,
+              bottom: 16,
+              width: 40,
+              height: 40,
+              borderRadius: 999,
+              padding: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              lineHeight: 1,
+            }}
+            onClick={() => void loadOrders()}
+            disabled={ordersLoading || Boolean(updatingOrderId)}
+            aria-label={ordersLoading ? "Atualizando pedidos" : "Atualizar pedidos"}
+            title={ordersLoading ? "Atualizando..." : "Atualizar"}
+          >
+            <span className="material-symbols-rounded" aria-hidden style={{ fontSize: 20, lineHeight: 1 }}>
+              {ordersLoading ? "autorenew" : "refresh"}
+            </span>
+          </button>
         </div>
 
         <div ref={ordersGridRef} className="orders-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
@@ -916,6 +1340,10 @@ export default function AdminOrdersPage() {
                     statusKey === "pendente" ? "#fff1f1" : statusKey === "em_progresso" ? "#fff8df" : "#ecfdf3";
                   const statusCardBorder =
                     statusKey === "pendente" ? "#f2cccc" : statusKey === "em_progresso" ? "#eed9a7" : "#bfe8cf";
+                  const statusButtonBackground =
+                    statusKey === "pendente" ? "#fde2e2" : statusKey === "em_progresso" ? "#fdf0c4" : "#dcfce7";
+                  const statusButtonBorder =
+                    statusKey === "pendente" ? "#e9b9b9" : statusKey === "em_progresso" ? "#e8d08d" : "#a7d9bc";
 
                   return (
                     <div
@@ -975,16 +1403,31 @@ export default function AdminOrdersPage() {
                             <strong style={{ fontSize: FONT_SCALE.md, textAlign: "center" }}>Total: {formatBRL(order.subtotal)}</strong>
 
                             <button
-                              title={printMode === "qz" ? "Imprimir via QZ" : "Imprimir 58mm"}
-                              aria-label={printMode === "qz" ? "Imprimir via QZ" : "Imprimir 58mm"}
-                              style={{ ...btn, width: 34, height: 34, padding: 0, borderRadius: 999, fontSize: FONT_SCALE.md, lineHeight: 1, background: "#e7f0ff", borderColor: "#bfd4f5" }}
+                              title="Imprimir via QZ"
+                              aria-label="Imprimir via QZ"
+                              style={{
+                                ...btn,
+                                width: 34,
+                                height: 34,
+                                padding: 0,
+                                borderRadius: 999,
+                                fontSize: FONT_SCALE.md,
+                                lineHeight: 1,
+                                background: statusButtonBackground,
+                                borderColor: statusButtonBorder,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                              }}
                               disabled={qzBusy}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                void printOrderWithMode(order);
+                                void printOrderViaQz(order);
                               }}
                             >
-                              🖨
+                              <span className="material-symbols-rounded" aria-hidden style={{ fontSize: 18, lineHeight: 1 }}>
+                                print
+                              </span>
                             </button>
                           </div>
                         </>

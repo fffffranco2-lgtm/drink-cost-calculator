@@ -2,6 +2,14 @@
 
 import Link from "next/link";
 import React, { useCallback, useEffect, useState } from "react";
+import {
+  internalButtonStyle,
+  internalCardStyle,
+  internalFocusStyle,
+  internalHeaderCardStyle,
+  internalPageStyle,
+  internalSmallTextStyle,
+} from "@/app/admin/internal-theme";
 
 type SessionHistoryRow = {
   id: string;
@@ -86,57 +94,30 @@ export default function OrdersHistoryPage() {
     void loadHistory();
   }, [loadHistory]);
 
-  const page: React.CSSProperties = {
-    ["--bg" as never]: "#f6f8fa",
-    ["--panel" as never]: "#ffffff",
-    ["--ink" as never]: "#141414",
-    ["--muted" as never]: "#67707a",
-    ["--border" as never]: "#d8dee5",
-    background: "var(--bg)",
-    minHeight: "100vh",
-    color: "var(--ink)",
-    padding: 20,
-    fontFamily: 'var(--font-app-sans), "Trebuchet MS", "Segoe UI", sans-serif',
-  };
-
+  const page: React.CSSProperties = { ...internalPageStyle };
   const container: React.CSSProperties = { maxWidth: 1100, margin: "0 auto" };
-  const card: React.CSSProperties = {
-    background: "var(--panel)",
-    border: "1px solid var(--border)",
-    borderRadius: 16,
-    padding: 14,
-  };
-  const small: React.CSSProperties = { fontSize: 12, color: "var(--muted)" };
+  const card: React.CSSProperties = { ...internalCardStyle };
+  const headerCard: React.CSSProperties = { ...internalHeaderCardStyle };
+  const small: React.CSSProperties = { ...internalSmallTextStyle };
   const btn: React.CSSProperties = {
-    border: "1px solid var(--border)",
-    borderRadius: 10,
-    background: "white",
-    padding: "8px 12px",
-    cursor: "pointer",
+    ...internalButtonStyle,
     fontWeight: 700,
-    color: "var(--ink)",
     textDecoration: "none",
     display: "inline-flex",
     alignItems: "center",
   };
   const tinyBtn: React.CSSProperties = {
-    border: "1px solid var(--border)",
+    ...btn,
     borderRadius: 8,
-    background: "white",
     padding: "4px 8px",
-    cursor: "pointer",
-    fontWeight: 700,
-    color: "var(--ink)",
-    textDecoration: "none",
-    display: "inline-flex",
-    alignItems: "center",
     fontSize: 12,
   };
 
   return (
     <div style={page}>
+      <style>{internalFocusStyle}</style>
       <div style={container}>
-        <div style={{ ...card, marginBottom: 12 }}>
+        <div style={{ ...headerCard, marginBottom: 12, position: "relative", paddingRight: 64 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
             <div>
               <h1 style={{ margin: 0, fontSize: 20 }}>Histórico de Pedidos</h1>
@@ -152,12 +133,33 @@ export default function OrdersHistoryPage() {
               <Link href="/admin" style={btn}>
                 Área interna
               </Link>
-              <button style={btn} onClick={() => void loadHistory()} disabled={loading}>
-                {loading ? "Atualizando..." : "Atualizar"}
-              </button>
             </div>
           </div>
           {error ? <div style={{ ...small, color: "#b00020", marginTop: 8 }}>{error}</div> : null}
+          <button
+            style={{
+              ...btn,
+              position: "absolute",
+              right: 16,
+              bottom: 16,
+              width: 40,
+              height: 40,
+              borderRadius: 999,
+              padding: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              lineHeight: 1,
+            }}
+            onClick={() => void loadHistory()}
+            disabled={loading}
+            aria-label={loading ? "Atualizando histórico" : "Atualizar histórico"}
+            title={loading ? "Atualizando..." : "Atualizar"}
+          >
+            <span className="material-symbols-rounded" aria-hidden style={{ fontSize: 20, lineHeight: 1 }}>
+              {loading ? "autorenew" : "refresh"}
+            </span>
+          </button>
         </div>
 
         <div style={{ ...card, fontFamily: 'var(--font-app-mono), "JetBrains Mono", "SFMono-Regular", Menlo, monospace' }}>

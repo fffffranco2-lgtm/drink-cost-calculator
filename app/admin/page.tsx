@@ -4,12 +4,20 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import Papa from "papaparse";
 import Link from "next/link";
 import {
-  PRINT_MODE_STORAGE_KEY,
   QZ_PRINTER_STORAGE_KEY,
-  type PrintMode,
   type QzApi,
   type QzConnectionState,
+  type QzTextSizePreset,
 } from "@/lib/qz-tray";
+import {
+  DEFAULT_PRINT_LAYOUT_ID,
+  QZ_ACTIVE_LAYOUT_STORAGE_KEY,
+  QZ_LAYOUTS_STORAGE_KEY,
+  buildLayoutOptions,
+  getActiveLayoutIdFromStorage,
+  getLayoutsFromStorage,
+  setActiveLayoutIdInStorage,
+} from "@/lib/print-layouts";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 
 /** Unidades que a receita pode usar */
@@ -683,6 +691,48 @@ const FONT_SCALE = {
   md: 14,
   lg: 18,
 } as const;
+const QZ_TEST_SIZE_TO_SCALE: Record<QzTextSizePreset, number> = {
+  normal: 1,
+  "2x": 2,
+  "3x": 3,
+};
+const QZ_TEST_SIZE_TO_ESC_POS: Record<QzTextSizePreset, string> = {
+  normal: "\x1D\x21\x00",
+  "2x": "\x1D\x21\x11",
+  "3x": "\x1D\x21\x22",
+};
+
+function qzTestColumnsForSize(baseWidth: number, preset: QzTextSizePreset) {
+  return Math.max(8, Math.floor(baseWidth / QZ_TEST_SIZE_TO_SCALE[preset]));
+}
+
+function qzTestCenterLine(text: string, width: number) {
+  const safe = text.trim();
+  if (safe.length >= width) return safe.slice(0, width);
+  const leftPadding = Math.floor((width - safe.length) / 2);
+  return `${" ".repeat(leftPadding)}${safe}`;
+}
+
+function qzTestLeftRightLine(left: string, right: string, width: number) {
+  const safeLeft = left.trim();
+  const safeRight = right.trim();
+  const maxLeftLen = Math.max(0, width - safeRight.length - 1);
+  const croppedLeft = safeLeft.length > maxLeftLen ? safeLeft.slice(0, maxLeftLen) : safeLeft;
+  const spaces = Math.max(1, width - croppedLeft.length - safeRight.length);
+  return `${croppedLeft}${" ".repeat(spaces)}${safeRight}`;
+}
+
+function isLikelyVirtualPrinter(name: string) {
+  const n = name.trim().toLowerCase();
+  return n.includes("fax") || n.includes("pdf") || n.includes("xps");
+}
+
+function choosePreferredPrinter(candidates: string[]) {
+  const cleaned = candidates.map((name) => name.trim()).filter(Boolean);
+  if (!cleaned.length) return "";
+  const nonVirtual = cleaned.find((name) => !isLikelyVirtualPrinter(name));
+  return nonVirtual ?? cleaned[0];
+}
 
 function pillStyle(active: boolean): React.CSSProperties {
   return {
@@ -840,13 +890,17 @@ export default function Page() {
   const inProgressBucketRef = useRef<HTMLDivElement | null>(null);
   const [completedBucketMaxHeight, setCompletedBucketMaxHeight] = useState<number | null>(null);
   const [settingsTab, setSettingsTab] = useState<"geral" | "impressao">("geral");
-  const [printMode, setPrintMode] = useState<PrintMode>("qz");
   const [qzPrinterName, setQzPrinterName] = useState("");
+  const [qzLayoutOptions, setQzLayoutOptions] = useState<Array<{ id: string; name: string }>>([
+    { id: DEFAULT_PRINT_LAYOUT_ID, name: "Padrao" },
+  ]);
+  const [qzActiveLayoutId, setQzActiveLayoutId] = useState(DEFAULT_PRINT_LAYOUT_ID);
   const [qzBusy, setQzBusy] = useState(false);
   const [qzError, setQzError] = useState("");
   const [qzConnectionState, setQzConnectionState] = useState<QzConnectionState>("disconnected");
   const qzLoaderRef = useRef<Promise<QzApi> | null>(null);
   const qzSecurityReadyRef = useRef(false);
+  const routePrintTabAppliedRef = useRef(false);
 
   const remoteState: AppStatePayload = useMemo(
     () => ({
@@ -933,6 +987,20 @@ export default function Page() {
       active = false;
     };
   }, [supabase]);
+
+  useEffect(() => {
+    if (hydratingRemote || routePrintTabAppliedRef.current) return;
+    routePrintTabAppliedRef.current = true;
+    const params = new URLSearchParams(window.location.search);
+    const tabParam = params.get("tab");
+    const settingsTabParam = params.get("settingsTab");
+    if (tabParam === "settings" || settingsTabParam === "impressao") {
+      setTab("settings");
+    }
+    if (settingsTabParam === "impressao") {
+      setSettingsTab("impressao");
+    }
+  }, [hydratingRemote]);
 
   useEffect(() => {
     if (hydratingRemote || !adminUserId || !supabase) return;
@@ -1089,7 +1157,30 @@ export default function Page() {
     }
   }, [configureQzSecurity, loadQz]);
 
-  const printTestViaQz = useCallback(async () => {
+  const resolveSelectedQzPrinter = useCallback(async (qz: QzApi) => {
+    const typedName = qzPrinterName.trim();
+    if (typedName) {
+      const typedFound = await qz.printers.find(typedName);
+      const typedList = typeof typedFound === "string" ? [typedFound] : typedFound;
+      const exact = (typedList ?? []).find((name) => name.trim().toLowerCase() === typedName.toLowerCase());
+      const fallbackTyped = choosePreferredPrinter(typedList ?? []);
+      const resolvedTyped = (exact ?? fallbackTyped ?? "").trim();
+      if (resolvedTyped) return resolvedTyped;
+    }
+
+    if (typeof qz.printers.getDefault === "function") {
+      const defaultPrinter = (await qz.printers.getDefault())?.trim() ?? "";
+      if (defaultPrinter) return defaultPrinter;
+    }
+
+    const discovered = await qz.printers.find();
+    const list = typeof discovered === "string" ? [discovered] : discovered;
+    const resolved = choosePreferredPrinter(list ?? []);
+    if (!resolved) throw new Error("Nenhuma impressora encontrada pelo QZ Tray.");
+    return resolved;
+  }, [qzPrinterName]);
+
+  const printStyledTestViaQz = useCallback(async () => {
     setQzBusy(true);
     setQzError("");
     try {
@@ -1098,40 +1189,62 @@ export default function Page() {
       if (!qz.websocket.isActive()) {
         await qz.websocket.connect({ retries: 2, delay: 1 });
       }
-      const typedName = qzPrinterName.trim();
-      const discovered = await qz.printers.find(typedName || undefined);
-      const printerName = typeof discovered === "string" ? discovered : discovered[0] ?? "";
-      const resolved = printerName.trim();
-      if (!resolved) {
-        throw new Error("Nenhuma impressora encontrada pelo QZ Tray.");
-      }
+      const resolved = await resolveSelectedQzPrinter(qz);
       const config = qz.configs.create(resolved, { encoding: "ISO-8859-1", copies: 1 });
-      const sample = "=== TESTE QZ ===\nConexao OK\n\n\n";
-      try {
-        await qz.print(config, [{ type: "raw", format: "command", flavor: "plain", data: sample }]);
-      } catch {
-        await qz.print(config, [{ type: "raw", format: "plain", data: sample }]);
-      }
+      const width = 32;
+      const nl = "\n";
+      const now = new Date().toLocaleString("pt-BR");
+      const totalText = "R$ 123,45";
+      const out: string[] = [];
+      out.push("\x1B\x40");
+
+      out.push("\x1B\x45\x01");
+      out.push("\x1B\x61\x01");
+      out.push(QZ_TEST_SIZE_TO_ESC_POS["2x"]);
+      const titleWidth = qzTestColumnsForSize(width, "2x");
+      out.push(`${qzTestCenterLine("TESTE AVANCADO", titleWidth)}${nl}`);
+      out.push(`${qzTestCenterLine("QZ + ESC/POS", titleWidth)}${nl}`);
+      out.push(QZ_TEST_SIZE_TO_ESC_POS.normal);
+      out.push("\x1B\x45\x00");
+      out.push("\x1B\x61\x00");
+      out.push(`${"=".repeat(width)}${nl}`);
+      out.push(`Data: ${now}${nl}`);
+      out.push(`Titulo: 2X${nl}`);
+      out.push(`Total: 2X${nl}`);
+      out.push(`${"-".repeat(width)}${nl}`);
+      out.push(`Item de teste${nl}`);
+      out.push(`${qzTestLeftRightLine("1 x R$ 123,45", "R$ 123,45", width)}${nl}`);
+      out.push(`${"=".repeat(width)}${nl}`);
+      out.push("\x1B\x45\x01");
+      out.push(QZ_TEST_SIZE_TO_ESC_POS["2x"]);
+      const totalWidth = qzTestColumnsForSize(width, "2x");
+      out.push(`${qzTestLeftRightLine("TOTAL", totalText, totalWidth)}${nl}`);
+      out.push(QZ_TEST_SIZE_TO_ESC_POS.normal);
+      out.push("\x1B\x45\x00");
+      out.push(`${nl}${nl}`);
+      out.push("\x1D\x56\x41\x10");
+      const sample = out.join("");
+      await qz.print(config, [{ type: "raw", format: "command", flavor: "plain", data: sample }]);
       setQzConnectionState("connected");
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Falha ao testar impressão via QZ Tray.";
+      const message = error instanceof Error ? error.message : "Falha ao testar impressão avançada via QZ Tray.";
       setQzError(message);
       setQzConnectionState("disconnected");
     } finally {
       setQzBusy(false);
     }
-  }, [configureQzSecurity, loadQz, qzPrinterName]);
+  }, [configureQzSecurity, loadQz, resolveSelectedQzPrinter]);
+
 
   useEffect(() => {
     try {
-      const savedMode = localStorage.getItem(PRINT_MODE_STORAGE_KEY);
-      if (savedMode === "qz" || savedMode === "browser") {
-        setPrintMode(savedMode);
-      }
       const savedPrinter = localStorage.getItem(QZ_PRINTER_STORAGE_KEY);
       if (savedPrinter) {
         setQzPrinterName(savedPrinter);
       }
+      const layouts = getLayoutsFromStorage();
+      setQzLayoutOptions(buildLayoutOptions(layouts));
+      setQzActiveLayoutId(getActiveLayoutIdFromStorage());
     } catch {
       // ignorar indisponibilidade de storage
     }
@@ -1139,11 +1252,26 @@ export default function Page() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(PRINT_MODE_STORAGE_KEY, printMode);
+      setActiveLayoutIdInStorage(qzActiveLayoutId);
     } catch {
       // ignorar indisponibilidade de storage
     }
-  }, [printMode]);
+  }, [qzActiveLayoutId]);
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== null && event.key !== QZ_LAYOUTS_STORAGE_KEY && event.key !== QZ_ACTIVE_LAYOUT_STORAGE_KEY) return;
+      try {
+        const layouts = getLayoutsFromStorage();
+        setQzLayoutOptions(buildLayoutOptions(layouts));
+        setQzActiveLayoutId(getActiveLayoutIdFromStorage());
+      } catch {
+        // ignorar indisponibilidade de storage
+      }
+    };
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
 
   useEffect(() => {
     try {
@@ -2441,14 +2569,6 @@ export default function Page() {
                   <div style={small}>A conexão do QZ vale apenas para a aba/janela atual do navegador.</div>
                 </div>
                 <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-                  <select
-                    value={printMode}
-                    onChange={(e) => setPrintMode(e.target.value === "browser" ? "browser" : "qz")}
-                    style={{ ...btn, padding: "6px 10px", fontWeight: 500 }}
-                  >
-                    <option value="qz">QZ Tray (ESC/POS)</option>
-                    <option value="browser">Navegador (fallback)</option>
-                  </select>
                   <input
                     value={qzPrinterName}
                     onChange={(e) => setQzPrinterName(e.target.value)}
@@ -2458,15 +2578,30 @@ export default function Page() {
                   <button style={{ ...btn, padding: "6px 10px" }} onClick={() => void connectQz()} disabled={qzBusy}>
                     {qzBusy ? "Conectando..." : "Conectar QZ"}
                   </button>
-                  <button style={{ ...btn, padding: "6px 10px" }} onClick={() => void printTestViaQz()} disabled={qzBusy || printMode !== "qz"}>
-                    Teste QZ
+                  <button style={{ ...btn, padding: "6px 10px" }} onClick={() => void printStyledTestViaQz()} disabled={qzBusy}>
+                    Teste avançado
                   </button>
                 </div>
-                {printMode === "qz" ? (
-                  <div style={small}>Impressão direta ESC/POS com encoding ISO-8859-1.</div>
-                ) : (
-                  <div style={small}>Modo fallback usando a janela de impressão do navegador.</div>
-                )}
+                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
+                  <label style={{ display: "inline-flex", alignItems: "center", gap: 6, ...small }}>
+                    Layout
+                    <select
+                      value={qzActiveLayoutId}
+                      onChange={(e) => setQzActiveLayoutId(e.target.value)}
+                      style={{ ...btn, padding: "6px 10px", fontWeight: 500, minWidth: 220 }}
+                    >
+                      {qzLayoutOptions.map((layout) => (
+                        <option key={layout.id} value={layout.id}>
+                          {layout.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <Link href="/admin/impressao" style={{ ...btn, textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
+                    Editar layouts
+                  </Link>
+                </div>
+                <div style={small}>Impressão direta ESC/POS com encoding ISO-8859-1.</div>
                 {qzError ? <div style={{ ...small, color: "#b00020" }}>{qzError}</div> : null}
               </div>
             )}

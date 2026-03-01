@@ -1,8 +1,7 @@
-export const PRINT_MODE_STORAGE_KEY = "orders_print_mode";
 export const QZ_PRINTER_STORAGE_KEY = "orders_qz_printer_name";
 export const AUTO_PRINT_STORAGE_KEY = "orders_auto_print_enabled";
 
-export type PrintMode = "qz" | "browser";
+export type QzTextSizePreset = "normal" | "2x" | "3x";
 export type QzConnectionState = "connected" | "disconnected";
 
 export type QzPrintConfigOptions = {

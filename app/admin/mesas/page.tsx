@@ -2,6 +2,16 @@
 
 import Link from "next/link";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  internalButtonStyle,
+  internalCardStyle,
+  internalDangerButtonStyle,
+  internalFocusStyle,
+  internalHeaderCardStyle,
+  internalInputStyle,
+  internalPageStyle,
+  internalSmallTextStyle,
+} from "@/app/admin/internal-theme";
 
 type TableConfig = {
   id: string;
@@ -194,49 +204,14 @@ export default function AdminTablesPage() {
     return map;
   }, [draftById, tables]);
 
-  const page: React.CSSProperties = {
-    ["--bg" as never]: "#f6f8fa",
-    ["--panel" as never]: "#ffffff",
-    ["--ink" as never]: "#141414",
-    ["--muted" as never]: "#67707a",
-    ["--border" as never]: "#d8dee5",
-    ["--accent" as never]: "#0f766e",
-    ["--danger-bg" as never]: "#fff1f1",
-    ["--danger-border" as never]: "#f0c2c2",
-    ["--danger-ink" as never]: "#7b1f1f",
-    background: "var(--bg)",
-    minHeight: "100vh",
-    color: "var(--ink)",
-    padding: 20,
-    fontFamily: 'var(--font-app-sans), "Trebuchet MS", "Segoe UI", sans-serif',
-  };
-
+  const page: React.CSSProperties = { ...internalPageStyle };
   const container: React.CSSProperties = { maxWidth: 1180, margin: "0 auto" };
-  const card: React.CSSProperties = {
-    background: "var(--panel)",
-    border: "1px solid var(--border)",
-    borderRadius: 16,
-    padding: 14,
-  };
-  const small: React.CSSProperties = { fontSize: 12, color: "var(--muted)" };
-  const input: React.CSSProperties = {
-    width: "100%",
-    padding: 10,
-    borderRadius: 10,
-    border: "1px solid var(--border)",
-    background: "white",
-    outline: "none",
-    fontSize: 14,
-    color: "var(--ink)",
-  };
+  const card: React.CSSProperties = { ...internalCardStyle };
+  const headerCard: React.CSSProperties = { ...internalHeaderCardStyle };
+  const small: React.CSSProperties = { ...internalSmallTextStyle };
+  const input: React.CSSProperties = { ...internalInputStyle };
   const btn: React.CSSProperties = {
-    border: "1px solid var(--border)",
-    borderRadius: 10,
-    background: "white",
-    padding: "8px 12px",
-    cursor: "pointer",
-    fontWeight: 700,
-    color: "var(--ink)",
+    ...internalButtonStyle,
     textDecoration: "none",
     display: "inline-flex",
     alignItems: "center",
@@ -244,10 +219,26 @@ export default function AdminTablesPage() {
     fontSize: 12,
   };
 
+  const responsiveStyle = `
+    @media (max-width: 980px) {
+      .tables-create-grid,
+      .tables-row-grid,
+      .tables-name-code-grid {
+        grid-template-columns: 1fr !important;
+      }
+      .tables-qr-wrap {
+        max-width: 280px;
+        margin: 0 auto;
+        width: 100%;
+      }
+    }
+  `;
+
   return (
     <div style={page}>
+      <style>{`${internalFocusStyle}\n${responsiveStyle}`}</style>
       <div style={container}>
-        <div style={{ ...card, marginBottom: 12 }}>
+        <div style={{ ...headerCard, marginBottom: 12, position: "relative", paddingRight: 64 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
             <div>
               <h1 style={{ margin: 0, fontSize: 20 }}>Configuração de Mesas</h1>
@@ -257,22 +248,44 @@ export default function AdminTablesPage() {
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
               <Link href="/admin/pedidos" style={btn}>Pedidos</Link>
               <Link href="/admin" style={btn}>Área interna</Link>
-              <button style={btn} onClick={() => void loadTables()} disabled={loading || creating || Boolean(savingId) || Boolean(deletingId)}>
-                {loading ? "Atualizando..." : "Atualizar"}
-              </button>
             </div>
           </div>
 
           {error ? (
-            <div style={{ marginTop: 10, padding: 10, borderRadius: 10, border: "1px solid var(--danger-border)", background: "var(--danger-bg)", color: "var(--danger-ink)", fontSize: 12 }}>
+            <div style={{ marginTop: 10, padding: 10, borderRadius: 10, border: "1px solid var(--dangerBorder)", background: "var(--danger)", color: "#7b1f1f", fontSize: 12 }}>
               {error}
             </div>
           ) : null}
+
+          <button
+            style={{
+              ...btn,
+              position: "absolute",
+              right: 16,
+              bottom: 16,
+              width: 40,
+              height: 40,
+              borderRadius: 999,
+              padding: 0,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              lineHeight: 1,
+            }}
+            onClick={() => void loadTables()}
+            disabled={loading || creating || Boolean(savingId) || Boolean(deletingId)}
+            aria-label={loading ? "Atualizando mesas" : "Atualizar mesas"}
+            title={loading ? "Atualizando..." : "Atualizar"}
+          >
+            <span className="material-symbols-rounded" aria-hidden style={{ fontSize: 20, lineHeight: 1 }}>
+              {loading ? "autorenew" : "refresh"}
+            </span>
+          </button>
         </div>
 
         <div style={{ ...card, marginBottom: 12 }}>
           <h2 style={{ marginTop: 0, fontSize: 16 }}>Nova mesa</h2>
-          <div style={{ display: "grid", gridTemplateColumns: "1.1fr 0.8fr auto", gap: 10, alignItems: "end" }}>
+          <div className="tables-create-grid" style={{ display: "grid", gridTemplateColumns: "1.1fr 0.8fr auto", gap: 10, alignItems: "end" }}>
             <div>
               <div style={{ ...small, marginBottom: 4 }}>Nome da mesa</div>
               <input
@@ -294,7 +307,7 @@ export default function AdminTablesPage() {
               />
             </div>
             <button
-              style={{ ...btn, height: 40, minWidth: 130, background: "var(--accent)", color: "white" }}
+              style={{ ...btn, height: 40, minWidth: 130, background: "var(--pillActive)" }}
               onClick={() => void createTable()}
               disabled={creating || !createName.trim()}
             >
@@ -310,9 +323,9 @@ export default function AdminTablesPage() {
             tables.map((table) => {
               const draft = draftById[table.id] ?? { name: table.name, code: table.code };
               return (
-                <div key={table.id} style={{ ...card, display: "grid", gridTemplateColumns: "1fr 260px", gap: 12, alignItems: "start" }}>
+                <div key={table.id} className="tables-row-grid" style={{ ...card, display: "grid", gridTemplateColumns: "1fr 260px", gap: 12, alignItems: "start" }}>
                   <div style={{ display: "grid", gap: 10 }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 0.7fr", gap: 10 }}>
+                    <div className="tables-name-code-grid" style={{ display: "grid", gridTemplateColumns: "1fr 0.7fr", gap: 10 }}>
                       <div>
                         <div style={{ ...small, marginBottom: 4 }}>Nome</div>
                         <input
@@ -340,7 +353,7 @@ export default function AdminTablesPage() {
 
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       <button
-                        style={{ ...btn, background: "var(--accent)", color: "white" }}
+                        style={{ ...btn, background: "var(--pillActive)" }}
                         disabled={!isDirtyById[table.id] || savingId === table.id || Boolean(deletingId)}
                         onClick={() => void saveTable(table.id)}
                       >
@@ -355,7 +368,7 @@ export default function AdminTablesPage() {
                       </button>
                       <a href={table.link} target="_blank" rel="noreferrer" style={btn}>Abrir link</a>
                       <button
-                        style={{ ...btn, borderColor: "#f0c2c2", color: "#7b1f1f", background: "#fff1f1" }}
+                        style={{ ...btn, ...internalDangerButtonStyle }}
                         disabled={deletingId === table.id || Boolean(savingId)}
                         onClick={() => void removeTable(table)}
                       >
@@ -364,7 +377,7 @@ export default function AdminTablesPage() {
                     </div>
                   </div>
 
-                  <div style={{ border: "1px solid var(--border)", borderRadius: 12, padding: 8, background: "white", position: "relative" }}>
+                  <div className="tables-qr-wrap" style={{ border: "1px solid var(--border)", borderRadius: 12, padding: 8, background: "white", position: "relative" }}>
                     <img
                       src={table.qrCodeUrl}
                       alt={`QR code da mesa ${table.name}`}
