@@ -786,11 +786,11 @@ function previewLinesForBlock(block: PrintLayoutBlock, sampleOrder: SampleOrder)
         if (itemRowHasTwoColumns(row)) {
           const safeLeftKey =
             isItemDataKey(row.leftDataKey) || row.leftDataKey === FREE_TEXT_KEY || row.leftDataKey === BLANK_LINE_KEY
-              ? row.leftDataKey
+              ? (row.leftDataKey ?? "item_qty_price")
               : "item_qty_price";
           const safeRightKey =
             isItemDataKey(row.rightDataKey) || row.rightDataKey === FREE_TEXT_KEY || row.rightDataKey === BLANK_LINE_KEY
-              ? row.rightDataKey
+              ? (row.rightDataKey ?? "item_total")
               : "item_total";
           const { leftAlign, rightAlign, leftSize, rightSize, leftBold, rightBold } = rowColumnSettingsFromRow(row);
           const leftMaxColumns = Math.max(1, Math.floor(columnsForSize(leftSize) / 2));
@@ -832,7 +832,9 @@ function previewLinesForBlock(block: PrintLayoutBlock, sampleOrder: SampleOrder)
           continue;
         }
         const dataKey =
-          isItemDataKey(row.dataKey) || row.dataKey === FREE_TEXT_KEY || row.dataKey === BLANK_LINE_KEY ? row.dataKey : "item_name";
+          isItemDataKey(row.dataKey) || row.dataKey === FREE_TEXT_KEY || row.dataKey === BLANK_LINE_KEY
+            ? (row.dataKey ?? "item_name")
+            : "item_name";
         const base = dataKey === FREE_TEXT_KEY ? row.text ?? "" : dataKey === BLANK_LINE_KEY ? "" : sampleItemValue(dataKey, item);
         const resolved = resolveDecoratedDataValue(dataKey, base, {
           tabCount: row.tabCount,
@@ -1093,9 +1095,6 @@ function inferLineKeys(block: PrintLayoutBlock) {
   }
   if (block.kind === "customer") {
     return { twoCols: false, left: "customer_name" as PrintDataKey, right: "customer_phone" as PrintDataKey, single: "customer_name" as PrintDataKey } as const;
-  }
-  if (block.kind === "items") {
-    return { twoCols: true, left: "item_qty_price" as PrintDataKey, right: "item_total" as PrintDataKey, single: "item_name" as PrintDataKey } as const;
   }
   if (block.kind === "items_count") {
     return { twoCols: true, left: "items_label" as PrintDataKey, right: "items_count" as PrintDataKey, single: "items_count" as PrintDataKey } as const;
@@ -2333,15 +2332,15 @@ export default function PrintLayoutsPage() {
                                 const rowRightBold = row.rightBold ?? row.bold ?? false;
                                 const rowSingle =
                                   isItemDataKey(row.dataKey) || row.dataKey === FREE_TEXT_KEY || row.dataKey === BLANK_LINE_KEY
-                                    ? row.dataKey
+                                    ? (row.dataKey ?? "item_name")
                                     : "item_name";
                                 const rowLeft =
                                   isItemDataKey(row.leftDataKey) || row.leftDataKey === FREE_TEXT_KEY || row.leftDataKey === BLANK_LINE_KEY
-                                    ? row.leftDataKey
+                                    ? (row.leftDataKey ?? "item_qty_price")
                                     : "item_qty_price";
                                 const rowRight =
                                   isItemDataKey(row.rightDataKey) || row.rightDataKey === FREE_TEXT_KEY || row.rightDataKey === BLANK_LINE_KEY
-                                    ? row.rightDataKey
+                                    ? (row.rightDataKey ?? "item_total")
                                     : "item_total";
                                 return (
                                   <div key={row.id} style={{ display: "grid", gap: 6, border: "1px solid var(--border)", borderRadius: 8, padding: 6 }}>
