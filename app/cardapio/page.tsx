@@ -51,6 +51,8 @@ type Drink = {
   manualPublicPrice?: number;
 };
 
+type CartaViewMode = "cards" | "list";
+
 type Settings = {
   markup: number;
   targetCmv: number;
@@ -59,6 +61,7 @@ type Settings = {
   publicMenuPriceVisibility: PublicMenuPriceVisibility;
   showPublicMenuGarnish: boolean;
   roundingMode: RoundingMode;
+  publicMenuViewMode: CartaViewMode;
 };
 
 const DEFAULT_SETTINGS: Settings = {
@@ -69,6 +72,7 @@ const DEFAULT_SETTINGS: Settings = {
   publicMenuPriceVisibility: "show",
   showPublicMenuGarnish: true,
   roundingMode: "end_90",
+  publicMenuViewMode: "cards",
 };
 
 type AppStatePayload = {
@@ -209,11 +213,15 @@ function normalizeSettings(raw?: SettingsLike | null): Settings {
       ? rawShowPublicMenuGarnish.toLowerCase() !== "false"
       : true;
 
+  const publicMenuViewMode: CartaViewMode =
+    (raw as { publicMenuViewMode?: unknown } | null | undefined)?.publicMenuViewMode === "list" ? "list" : "cards";
+
   return {
     ...DEFAULT_SETTINGS,
     ...raw,
     publicMenuPriceVisibility: visibility,
     showPublicMenuGarnish,
+    publicMenuViewMode,
   };
 }
 
@@ -912,144 +920,198 @@ export default function PublicMenuPage() {
             </div>
           ) : null}
 
-          <input
-            className="public-search"
-            style={{
-              ...input,
-              width: searchWidth,
-              fontSize: fontScale.sm,
-              padding: "8px 2px",
-              border: 0,
-              borderBottom: "1px solid rgba(247, 244, 227, 0.95)",
-              borderRadius: 0,
-              background: "transparent",
-              color: "var(--brand-cream)",
-              boxShadow: "none",
-              caretColor: "var(--brand-cream)",
-            }}
-            placeholder="Buscar drink ou ingrediente"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+          <div style={{ display: "flex", alignItems: "center", gap: 10, width: searchWidth }}>
+            <input
+              className="public-search"
+              style={{
+                ...input,
+                flex: 1,
+                fontSize: fontScale.sm,
+                padding: "8px 2px",
+                border: 0,
+                borderBottom: "1px solid rgba(247, 244, 227, 0.95)",
+                borderRadius: 0,
+                background: "transparent",
+                color: "var(--brand-cream)",
+                boxShadow: "none",
+                caretColor: "var(--brand-cream)",
+              }}
+              placeholder="Buscar drink ou ingrediente"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
 
-          <div
-            className="public-grid"
-            style={{
-              marginTop: 12,
-              width: menuSectionWidth,
-              display: "grid",
-              gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`,
-              gap: 12,
-            }}
-          >
-            {rows.map(({ drink, displayPrice, ingredientLines }) => (
-              <button
-                key={drink.id}
-                onClick={() => openDrinkModal(drink.id)}
-                style={{
-                  border: "1px solid var(--border)",
-                  borderRadius: 16,
-                  background: "var(--panel-elevated)",
-                  overflow: "hidden",
-                  display: "grid",
-                  height: 344,
-                  gridTemplateRows: "60% 40%",
-                  cursor: "pointer",
-                  padding: 0,
-                  textAlign: "left",
-                  position: "relative",
-                }}
-              >
-                <div
+          {settings.publicMenuViewMode === "cards" ? (
+            <div
+              className="public-grid"
+              style={{
+                marginTop: 12,
+                width: menuSectionWidth,
+                display: "grid",
+                gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`,
+                gap: 12,
+              }}
+            >
+              {rows.map(({ drink, displayPrice, ingredientLines }) => (
+                <button
+                  key={drink.id}
+                  onClick={() => openDrinkModal(drink.id)}
                   style={{
-                    position: "absolute",
-                    top: 10,
-                    right: 10,
-                    width: 28,
-                    height: 28,
-                    borderRadius: 999,
                     border: "1px solid var(--border)",
-                    background: "rgba(255, 255, 255, 0.92)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    color: "var(--ink)",
-                    pointerEvents: "none",
-                    zIndex: 2,
+                    borderRadius: 16,
+                    background: "var(--panel-elevated)",
+                    overflow: "hidden",
+                    display: "grid",
+                    height: 344,
+                    gridTemplateRows: "60% 40%",
+                    cursor: "pointer",
+                    padding: 0,
+                    textAlign: "left",
+                    position: "relative",
                   }}
                 >
-                  <span className="material-symbols-rounded" style={{ fontSize: 18 }} aria-hidden>add</span>
-                </div>
+                  <div
+                    style={{
+                      position: "absolute",
+                      top: 10,
+                      right: 10,
+                      width: 28,
+                      height: 28,
+                      borderRadius: 999,
+                      border: "1px solid var(--border)",
+                      background: "rgba(255, 255, 255, 0.92)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: "var(--ink)",
+                      pointerEvents: "none",
+                      zIndex: 2,
+                    }}
+                  >
+                    <span className="material-symbols-rounded" style={{ fontSize: 18 }} aria-hidden>add</span>
+                  </div>
 
-                <div
-                  style={{
-                    background: "var(--panel2)",
-                    borderBottom: "1px solid var(--border)",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    color: "var(--muted)",
-                    fontSize: fontScale.sm,
-                  }}
-                >
-                  {drink.photoDataUrl ? (
-                    <img
-                      src={drink.photoDataUrl}
-                      alt={drink.name}
-                      style={{
-                        width: "100%",
-                        height: "100%",
-                        objectFit: "cover",
-                      }}
-                    />
-                  ) : (
-                    "Sem foto"
-                  )}
-                </div>
+                  <div
+                    style={{
+                      background: "var(--panel2)",
+                      borderBottom: "1px solid var(--border)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: "var(--muted)",
+                      fontSize: fontScale.sm,
+                    }}
+                  >
+                    {drink.photoDataUrl ? (
+                      <img
+                        src={drink.photoDataUrl}
+                        alt={drink.name}
+                        style={{
+                          width: "100%",
+                          height: "100%",
+                          objectFit: "cover",
+                        }}
+                      />
+                    ) : (
+                      "Sem foto"
+                    )}
+                  </div>
 
-                <div style={{ padding: "14px 10px", display: "flex", flexDirection: "column", textAlign: "center", minHeight: 0, alignItems: "center", height: "100%" }}>
-                  <div style={{ fontSize: fontScale.md, fontWeight: 700, lineHeight: 1.1, marginTop: 4 }}>{drink.name}</div>
+                  <div style={{ padding: "14px 10px", display: "flex", flexDirection: "column", textAlign: "center", minHeight: 0, alignItems: "center", height: "100%" }}>
+                    <div style={{ fontSize: fontScale.md, fontWeight: 700, lineHeight: 1.1, marginTop: 4 }}>{drink.name}</div>
 
-                  <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", width: "100%" }}>
-                    <div
-                      style={{
-                        ...small,
-                        fontSize: fontScale.sm,
-                        lineHeight: 1.25,
-                        color: "var(--muted)",
-                        whiteSpace: "normal",
-                        width: "100%",
-                      }}
-                    >
-                      {ingredientLines.length ? (
-                        <IngredientInlineList
-                          idPrefix={`${drink.id}_ing`}
-                          ingredients={ingredientLines}
-                          emptyText="Sem ingredientes cadastrados"
-                        />
+                    <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", width: "100%" }}>
+                      <div
+                        style={{
+                          ...small,
+                          fontSize: fontScale.sm,
+                          lineHeight: 1.25,
+                          color: "var(--muted)",
+                          whiteSpace: "normal",
+                          width: "100%",
+                        }}
+                      >
+                        {ingredientLines.length ? (
+                          <IngredientInlineList
+                            idPrefix={`${drink.id}_ing`}
+                            ingredients={ingredientLines}
+                            emptyText="Sem ingredientes cadastrados"
+                          />
+                        ) : (
+                          "Sem ingredientes cadastrados"
+                        )}
+                      </div>
+                    </div>
+
+                    <div style={{ minHeight: 26, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {displayPrice !== null ? (
+                        <div style={{ fontSize: fontScale.md, fontWeight: 650 }}>{formatBRL(displayPrice)}</div>
                       ) : (
-                        "Sem ingredientes cadastrados"
+                        <div style={{ visibility: "hidden", fontSize: fontScale.md, fontWeight: 650 }}>R$ 00,00</div>
                       )}
                     </div>
                   </div>
+                </button>
+              ))}
 
-                  <div style={{ minHeight: 26, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    {displayPrice !== null ? (
-                      <div style={{ fontSize: fontScale.md, fontWeight: 650 }}>{formatBRL(displayPrice)}</div>
-                    ) : (
-                      <div style={{ visibility: "hidden", fontSize: fontScale.md, fontWeight: 650 }}>R$ 00,00</div>
-                    )}
-                  </div>
+              {rows.length === 0 && (
+                <div style={{ padding: 14, border: "1px dashed var(--border)", borderRadius: 14, color: "var(--muted)", gridColumn: "1 / -1", background: "var(--panel2)" }}>
+                  Nenhum drink selecionado para o cardápio público.
                 </div>
-              </button>
-            ))}
-
-            {rows.length === 0 && (
-              <div style={{ padding: 14, border: "1px dashed var(--border)", borderRadius: 14, color: "var(--muted)", gridColumn: "1 / -1", background: "var(--panel2)" }}>
-                Nenhum drink selecionado para o cardápio público.
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          ) : (
+            /* Visualização em lista */
+            <div style={{ marginTop: 20, width: "min(100%, 560px)" }}>
+              {rows.length === 0 && (
+                <div style={{ color: "rgba(247, 244, 227, 0.6)", fontSize: 13 }}>
+                  Nenhum drink selecionado para o cardápio público.
+                </div>
+              )}
+              {rows.map(({ drink, displayPrice, ingredientLines }) => (
+                <button
+                  key={drink.id}
+                  onClick={() => openDrinkModal(drink.id)}
+                  style={{
+                    display: "flex",
+                    alignItems: "baseline",
+                    justifyContent: "space-between",
+                    gap: 16,
+                    width: "100%",
+                    padding: "11px 0",
+                    background: "transparent",
+                    border: "none",
+                    cursor: "pointer",
+                    textAlign: "left",
+                    outline: "none",
+                  }}
+                >
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.2, color: "var(--brand-cream)" }}>
+                      {drink.name}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 13,
+                        color: "rgba(247, 244, 227, 0.65)",
+                        fontStyle: "italic",
+                        lineHeight: 1.35,
+                        marginTop: 3,
+                      }}
+                    >
+                      {ingredientLines.length ? ingredientLines.join(", ") : "Sem ingredientes cadastrados"}
+                    </div>
+                  </div>
+                  {displayPrice !== null && (
+                    <div style={{ fontSize: 15, fontWeight: 650, color: "var(--brand-cream)", flexShrink: 0 }}>
+                      {formatBRL(displayPrice)}
+                    </div>
+                  )}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         <div style={{ display: "flex", justifyContent: "center", marginTop: 14 }}>

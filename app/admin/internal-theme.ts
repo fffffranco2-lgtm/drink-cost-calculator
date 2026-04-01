@@ -20,7 +20,7 @@ export const internalThemeVars: ThemeVars = {
 
 export const internalPageStyle: React.CSSProperties = {
   ...internalThemeVars,
-  background: "var(--bg)",
+  backgroundColor: "var(--bg)",
   minHeight: "100vh",
   color: "var(--ink)",
   padding: 24,
@@ -28,8 +28,10 @@ export const internalPageStyle: React.CSSProperties = {
 };
 
 export const internalCardStyle: React.CSSProperties = {
-  background: "var(--panel)",
-  border: "1px solid var(--border)",
+  backgroundColor: "var(--panel)",
+  borderWidth: 1,
+  borderStyle: "solid",
+  borderColor: "var(--border)",
   borderRadius: 18,
   padding: 16,
   boxShadow: "var(--shadow)",
@@ -37,7 +39,7 @@ export const internalCardStyle: React.CSSProperties = {
 
 export const internalHeaderCardStyle: React.CSSProperties = {
   ...internalCardStyle,
-  background: "var(--panel2)",
+  backgroundColor: "var(--panel2)",
 };
 
 export const internalSmallTextStyle: React.CSSProperties = {
@@ -48,8 +50,10 @@ export const internalSmallTextStyle: React.CSSProperties = {
 export const internalButtonStyle: React.CSSProperties = {
   padding: "10px 13px",
   borderRadius: 12,
-  border: "1px solid var(--border)",
-  background: "var(--btn)",
+  borderWidth: 1,
+  borderStyle: "solid",
+  borderColor: "var(--border)",
+  backgroundColor: "var(--btn)",
   cursor: "pointer",
   fontWeight: 600,
   color: "var(--ink)",
@@ -57,7 +61,7 @@ export const internalButtonStyle: React.CSSProperties = {
 
 export const internalDangerButtonStyle: React.CSSProperties = {
   ...internalButtonStyle,
-  background: "var(--danger)",
+  backgroundColor: "var(--danger)",
   borderColor: "var(--dangerBorder)",
 };
 
@@ -65,7 +69,9 @@ export const internalInputStyle: React.CSSProperties = {
   width: "100%",
   padding: 12,
   borderRadius: 12,
-  border: "1px solid var(--border)",
+  borderWidth: 1,
+  borderStyle: "solid",
+  borderColor: "var(--border)",
   background: "white",
   color: "var(--ink)",
   outline: "none",
@@ -73,8 +79,10 @@ export const internalInputStyle: React.CSSProperties = {
 
 export function internalPillStyle(active: boolean): React.CSSProperties {
   return {
-    border: "1px solid var(--border)",
-    background: active ? "var(--pillActive)" : "var(--pill)",
+    borderWidth: 1,
+    borderStyle: "solid",
+    borderColor: "var(--border)",
+    backgroundColor: active ? "var(--pillActive)" : "var(--pill)",
     borderRadius: 12,
     padding: "8px 14px",
     fontSize: 12,

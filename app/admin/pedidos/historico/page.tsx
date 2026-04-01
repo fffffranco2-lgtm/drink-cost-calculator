@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import React, { useCallback, useEffect, useState } from "react";
 import {
   internalButtonStyle,
@@ -122,17 +121,6 @@ export default function OrdersHistoryPage() {
             <div>
               <h1 style={{ margin: 0, fontSize: 20 }}>Histórico de Pedidos</h1>
               <div style={small}>Visualização em árvore de sessões e pedidos</div>
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Link href="/admin/pedidos" style={btn}>
-                Pedidos em tempo real
-              </Link>
-              <Link href="/admin/mesas" style={btn}>
-                Mesas
-              </Link>
-              <Link href="/admin" style={btn}>
-                Área interna
-              </Link>
             </div>
           </div>
           {error ? <div style={{ ...small, color: "#b00020", marginTop: 8 }}>{error}</div> : null}

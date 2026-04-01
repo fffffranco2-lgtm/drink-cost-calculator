@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   internalButtonStyle,
@@ -245,10 +244,6 @@ export default function AdminTablesPage() {
               <div style={small}>Crie, renomeie e remova mesas com link e QR code para pedido.</div>
             </div>
 
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Link href="/admin/pedidos" style={btn}>Pedidos</Link>
-              <Link href="/admin" style={btn}>Área interna</Link>
-            </div>
           </div>
 
           {error ? (

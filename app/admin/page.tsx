@@ -3,326 +3,64 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 import Link from "next/link";
-import {
-  QZ_PRINTER_STORAGE_KEY,
-  type QzApi,
-  type QzConnectionState,
-  type QzTextSizePreset,
-} from "@/lib/qz-tray";
-import {
-  DEFAULT_PRINT_LAYOUT_ID,
-  QZ_ACTIVE_LAYOUT_STORAGE_KEY,
-  QZ_LAYOUTS_STORAGE_KEY,
-  buildLayoutOptions,
-  getActiveLayoutIdFromStorage,
-  getLayoutsFromStorage,
-  setActiveLayoutIdInStorage,
-} from "@/lib/print-layouts";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
+import { type AdminOrder, type AdminOrderItem, type OrderSource, type OrderStatus } from "@/lib/orders";
+import { clamp, formatBRL, makeCopyName } from "@/lib/utils";
+import { NumberField } from "@/app/admin/components/NumberField";
+import { ScrollShadow } from "@/app/admin/components/ScrollShadow";
+import { useQzConnection } from "@/app/admin/hooks/useQzConnection";
+import { ResumoTab } from "@/app/admin/components/ResumoTab";
+import { DrinksTab } from "@/app/admin/components/DrinksTab";
+import { IngredientsTab } from "@/app/admin/components/IngredientsTab";
+import { SettingsTab } from "@/app/admin/components/SettingsTab";
+import {
+  type RecipeUnit,
+  type PricingModel,
+  type IngredientCategory,
+  type PublicMenuDrinkPriceMode,
+  type PublicMenuPriceVisibility,
+  type CartaViewMode,
+  type RecipeSortMode,
+  type RoundingMode,
+  type Ingredient,
+  type RecipeItem,
+  type Drink,
+  type Settings,
+  type AppStatePayload,
+  type ExportPayload,
+  INGREDIENT_CATEGORIES,
+  INGREDIENT_CATEGORY_LABEL,
+  DEFAULT_SETTINGS,
+  STORAGE_KEY,
+  REMOTE_SAVE_DEBOUNCE_MS,
+  LOCAL_SAVE_DEBOUNCE_MS,
+  uid,
+  applyPsychRounding,
+  computeCostPerMl,
+  computeItemCost,
+  computeDrinkCost,
+  normalizeIngredient,
+  normalizeIngredients,
+  normalizeDrink,
+  normalizeSettings,
+  formatRecipeItemsForDisplay,
+  FONT_SCALE,
+  pillStyle,
+  compactPillStyle,
+  adminCard,
+  adminHeaderCard,
+  adminBtn,
+  adminBtnDanger,
+  adminIconBtn,
+  adminIconBtnDanger,
+  adminInput,
+  adminSmall,
+  adminTopTab,
+  adminCategoryButtonStyle,
+  adminIngredientButtonStyle,
+} from "@/app/admin/admin-types";
 
-/** Unidades que a receita pode usar */
-type RecipeUnit = "ml" | "un" | "dash" | "drop";
 
-/** Como precificar um ingrediente */
-type PricingModel = "by_ml" | "by_bottle" | "by_unit";
-type IngredientCategory =
-  | "destilados_base"
-  | "fortificados"
-  | "licores"
-  | "amaros_aperitivos"
-  | "bitters"
-  | "xaropes"
-  | "citricos"
-  | "sucos"
-  | "mixers_carbonatados"
-  | "garnish"
-  | "outros";
-
-type PublicMenuDrinkPriceMode = "markup" | "cmv" | "manual";
-type PublicMenuPriceVisibility = "show" | "none";
-type CartaViewMode = "cards" | "list";
-type RecipeSortMode = "alpha_asc" | "alpha_desc" | "price_asc" | "price_desc" | "cost_asc" | "cost_desc";
-
-/** Arredondamento psicológico */
-type RoundingMode = "none" | "end_90" | "end_00" | "end_50";
-
-const INGREDIENT_CATEGORIES: IngredientCategory[] = [
-  "destilados_base",
-  "fortificados",
-  "licores",
-  "amaros_aperitivos",
-  "bitters",
-  "xaropes",
-  "citricos",
-  "sucos",
-  "mixers_carbonatados",
-  "garnish",
-  "outros",
-];
-
-const INGREDIENT_CATEGORY_LABEL: Record<IngredientCategory, string> = {
-  destilados_base: "Destilados Base",
-  fortificados: "Fortificados",
-  licores: "Licores",
-  amaros_aperitivos: "Amaros & Aperitivos",
-  sucos: "Sucos",
-  citricos: "Cítricos",
-  mixers_carbonatados: "Mixers / Carbonatados",
-  xaropes: "Xaropes",
-  bitters: "Bitters",
-  garnish: "Garnish",
-  outros: "Outros",
-};
-
-const DEFAULT_INGREDIENT_CATEGORY: IngredientCategory = "outros";
-
-type Ingredient = {
-  id: string;
-  name: string;
-  category: IngredientCategory;
-
-  pricingModel: PricingModel;
-
-  // by_ml:
-  costPerMl?: number; // R$/ml
-
-  // by_bottle:
-  bottlePrice?: number; // R$
-  bottleMl?: number; // ml nominal
-  yieldMl?: number; // ml utilizável real
-  lossPct?: number; // 0-100 perdas adicionais
-
-  // by_unit:
-  costPerUnit?: number; // R$ por unidade
-
-  notes?: string;
-};
-
-type RecipeItem = {
-  ingredientId: string;
-  qty: number;
-  unit: RecipeUnit; // ml | un | dash | drop
-};
-
-type Drink = {
-  id: string;
-  name: string;
-  items: RecipeItem[];
-  notes?: string;
-  photoDataUrl?: string; // base64 (data URL) da foto
-  showOnPublicMenu?: boolean;
-  publicMenuPriceMode?: PublicMenuDrinkPriceMode;
-  manualPublicPrice?: number;
-};
-
-type Settings = {
-  markup: number;
-  targetCmv: number; // 0.2 = 20%
-  dashMl: number; // ml por dash (normalmente fracionário)
-  dropMl: number; // ml por gota (normalmente fracionário)
-  publicMenuPriceVisibility: PublicMenuPriceVisibility;
-  showPublicMenuGarnish: boolean;
-  roundingMode: RoundingMode; // arredondamento psicológico
-};
-
-const DEFAULT_SETTINGS: Settings = {
-  markup: 4,
-  targetCmv: 0.2,
-  dashMl: 0.9,
-  dropMl: 0.05,
-  publicMenuPriceVisibility: "show",
-  showPublicMenuGarnish: true,
-  roundingMode: "end_90",
-};
-
-const STORAGE_KEY = "mixologia_drink_cost_v4_menu_rounding";
-const REMOTE_SAVE_DEBOUNCE_MS = 1500;
-const LOCAL_SAVE_DEBOUNCE_MS = 1500;
-
-function normalizeDrink(raw: any): Drink {
-  const priceMode: PublicMenuDrinkPriceMode =
-    raw?.publicMenuPriceMode === "cmv" || raw?.publicMenuPriceMode === "manual" ? raw.publicMenuPriceMode : "markup";
-  const manualPublicPrice = Number(raw?.manualPublicPrice);
-
-  return {
-    ...raw,
-    showOnPublicMenu: Boolean(raw?.showOnPublicMenu),
-    publicMenuPriceMode: priceMode,
-    manualPublicPrice: Number.isFinite(manualPublicPrice) ? manualPublicPrice : 0,
-  };
-}
-
-function normalizeSettings(raw: any): Settings {
-  const visibility: PublicMenuPriceVisibility =
-    raw?.publicMenuPriceVisibility === "none" || raw?.publicMenuPriceMode === "none" ? "none" : "show";
-  const showPublicMenuGarnish =
-    typeof raw?.showPublicMenuGarnish === "boolean"
-      ? raw.showPublicMenuGarnish
-      : typeof raw?.showPublicMenuGarnish === "string"
-      ? raw.showPublicMenuGarnish.toLowerCase() !== "false"
-      : true;
-
-  return {
-    ...DEFAULT_SETTINGS,
-    ...raw,
-    publicMenuPriceVisibility: visibility,
-    showPublicMenuGarnish,
-  };
-}
-
-function toDisplayUnit(unit: RecipeUnit) {
-  return unit === "drop" ? "gota" : unit;
-}
-
-function formatQty(value: number, decimals: number) {
-  const factor = Math.pow(10, decimals);
-  const rounded = Math.round(value * factor) / factor;
-  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(decimals).replace(/\.?0+$/, "").replace(".", ",");
-}
-
-function sortRecipeItems(
-  items: RecipeItem[],
-  ingredientMap: Map<string, Ingredient>,
-  options?: { hideGarnish?: boolean }
-) {
-  const hideGarnish = Boolean(options?.hideGarnish);
-  const filtered = hideGarnish ? items.filter((item) => ingredientMap.get(item.ingredientId)?.category !== "garnish") : items;
-
-  return [...filtered].sort((a, b) => {
-    const group = (unit: RecipeUnit) => (unit === "ml" ? 0 : unit === "dash" ? 1 : 2);
-    const groupDiff = group(a.unit) - group(b.unit);
-    if (groupDiff !== 0) return groupDiff;
-
-    if (a.qty !== b.qty) return b.qty - a.qty;
-
-    const nameA = ingredientMap.get(a.ingredientId)?.name ?? "";
-    const nameB = ingredientMap.get(b.ingredientId)?.name ?? "";
-    return nameA.localeCompare(nameB, "pt-BR");
-  });
-}
-
-function formatRecipeItemsForDisplay(
-  items: RecipeItem[],
-  ingredientMap: Map<string, Ingredient>,
-  options?: { hideGarnish?: boolean; garnishTag?: boolean }
-) {
-  const garnishTag = Boolean(options?.garnishTag);
-  return sortRecipeItems(items, ingredientMap, options).map((item) => {
-    const ingredient = ingredientMap.get(item.ingredientId);
-    const name = ingredient?.name?.trim();
-    if (!name) return null;
-
-    const unit = toDisplayUnit(item.unit);
-    const decimals = item.unit === "ml" ? 0 : 2;
-    const qty = formatQty(item.qty, decimals);
-    const garnishSuffix = garnishTag && ingredient?.category === "garnish" ? " (garnish)" : "";
-    const dashSuffix = item.qty > 1 ? "dashes" : "dash";
-    const qtyWithUnit = item.unit === "dash" ? `${qty} ${dashSuffix}` : `${qty}${unit}`;
-    return `${qtyWithUnit} ${name}${garnishSuffix}`;
-  }).filter((entry): entry is string => Boolean(entry));
-}
-
-function normalizeIngredientCategory(raw: unknown): IngredientCategory {
-  const value = typeof raw === "string" ? raw.trim().toLowerCase() : "";
-  const legacyMap: Record<string, IngredientCategory> = {
-    destilados: "destilados_base",
-    vermutes: "fortificados",
-    amaros: "amaros_aperitivos",
-  };
-  if (legacyMap[value]) return legacyMap[value];
-  return (INGREDIENT_CATEGORIES as string[]).includes(value) ? (value as IngredientCategory) : DEFAULT_INGREDIENT_CATEGORY;
-}
-
-function parseOptionalNumber(raw: unknown): number | undefined {
-  if (raw === "" || raw === null || raw === undefined) return undefined;
-  const value = Number(raw);
-  return Number.isFinite(value) ? value : undefined;
-}
-
-function normalizeIngredient(raw: any): Ingredient {
-  const pricingModel: PricingModel =
-    raw?.pricingModel === "by_ml" || raw?.pricingModel === "by_unit" ? raw.pricingModel : "by_bottle";
-
-  return {
-    id: String(raw?.id || uid("ing")),
-    name: String(raw?.name || "Ingrediente"),
-    category: normalizeIngredientCategory(raw?.category),
-    pricingModel,
-    costPerMl: parseOptionalNumber(raw?.costPerMl),
-    bottlePrice: parseOptionalNumber(raw?.bottlePrice),
-    bottleMl: parseOptionalNumber(raw?.bottleMl),
-    yieldMl: parseOptionalNumber(raw?.yieldMl),
-    lossPct: parseOptionalNumber(raw?.lossPct),
-    costPerUnit: parseOptionalNumber(raw?.costPerUnit),
-    notes: raw?.notes ? String(raw.notes) : undefined,
-  };
-}
-
-function normalizeIngredients(raw: unknown): Ingredient[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.map((item) => normalizeIngredient(item));
-}
-
-/* ----------------------------- utils ----------------------------- */
-
-function uid(prefix = "id") {
-  return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
-}
-
-function formatBRL(value: number) {
-  return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
-}
-
-function clamp(n: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, n));
-}
-
-function makeCopyName(baseName: string, existingNames: string[]) {
-  const trimmed = baseName.trim();
-  const normalized = trimmed.replace(/\s*\(cópia(\s\d+)?\)$/i, "");
-  const root = normalized || "Sem nome";
-
-  const nameSet = new Set(existingNames);
-  const firstCopy = `${root} (cópia)`;
-  if (!nameSet.has(firstCopy)) return firstCopy;
-
-  let index = 2;
-  while (nameSet.has(`${root} (cópia ${index})`)) index += 1;
-  return `${root} (cópia ${index})`;
-}
-
-/** parse pt-BR input; allow empty */
-function parseNumberLoose(raw: string): number | null {
-  const t = raw.trim();
-  if (!t) return null;
-  const norm = t.replace(/\./g, "").replace(",", "."); // allow 1.234,56
-  const v = Number(norm);
-  return Number.isFinite(v) ? v : null;
-}
-
-/** format number for input */
-function formatFixed(n: number, decimals: number) {
-  return n.toFixed(decimals).replace(".", ",");
-}
-
-/** arredondamento psicológico para preço (sempre para cima ou igual) */
-function applyPsychRounding(price: number, mode: RoundingMode) {
-  if (!Number.isFinite(price)) return 0;
-  if (mode === "none") return price;
-
-  const integer = Math.floor(price);
-  const frac = price - integer;
-
-  if (mode === "end_00") {
-    // próximo inteiro (ou igual)
-    return frac === 0 ? price : integer + 1;
-  }
-
-  const targetFrac = mode === "end_90" ? 0.9 : 0.5;
-  const candidate = integer + targetFrac;
-  if (price <= candidate + 1e-9) return candidate; // já cabe no mesmo inteiro
-  return integer + 1 + targetFrac; // sobe pro próximo
-}
 
 /** compressão das imagens */
 async function fileToDataUrlResized(
@@ -360,55 +98,6 @@ async function fileToDataUrlResized(
   return canvas.toDataURL("image/jpeg", quality);
 }
 
-/* --------------------------- calculations --------------------------- */
-
-function computeCostPerMl(ing: Ingredient): number | null {
-  if (ing.pricingModel === "by_ml") {
-    const v = ing.costPerMl ?? 0;
-    return v > 0 ? v : 0;
-  }
-  if (ing.pricingModel === "by_bottle") {
-    const price = ing.bottlePrice ?? 0;
-    const bottleMl = ing.bottleMl ?? 0;
-    const yieldMl = ing.yieldMl ?? bottleMl;
-    const lossPct = clamp(ing.lossPct ?? 0, 0, 100);
-
-    const effectiveYield = yieldMl * (1 - lossPct / 100);
-    if (price <= 0 || effectiveYield <= 0) return 0;
-    return price / effectiveYield;
-  }
-  return null; // by_unit não tem R$/ml
-}
-
-function computeItemCost(item: RecipeItem, ing: Ingredient | undefined, settings: Settings): number {
-  if (!ing) return 0;
-
-  if (item.unit === "un") {
-    const cpu = ing.pricingModel === "by_unit" ? (ing.costPerUnit ?? 0) : 0;
-    return item.qty * cpu;
-  }
-
-  const ml =
-    item.unit === "ml"
-      ? item.qty
-      : item.unit === "dash"
-      ? item.qty * settings.dashMl
-      : item.qty * settings.dropMl;
-
-  const cpm = computeCostPerMl(ing);
-  if (cpm === null) return 0;
-  return ml * cpm;
-}
-
-function computeDrinkCost(drink: Drink, ingredients: Ingredient[], settings: Settings) {
-  const map = new Map(ingredients.map((i) => [i.id, i]));
-  let total = 0;
-  for (const item of drink.items) {
-    total += computeItemCost(item, map.get(item.ingredientId), settings);
-  }
-  return total;
-}
-
 /* ------------------------------ CSV ------------------------------ */
 
 function downloadTextFile(filename: string, content: string) {
@@ -422,50 +111,6 @@ function downloadTextFile(filename: string, content: string) {
   a.remove();
   URL.revokeObjectURL(url);
 }
-
-type ExportPayload = {
-  ingredients: Ingredient[];
-  drinks: Drink[];
-  settings: Settings;
-};
-
-type AppStatePayload = {
-  ingredients: Ingredient[];
-  drinks: Drink[];
-  settings: Settings;
-  activeDrinkId: string | null;
-  activeIngredientId: string | null;
-  tab: "carta" | "receitas" | "drinks" | "ingredients" | "settings" | "orders";
-  cartaViewMode: CartaViewMode;
-};
-
-type OrderStatus = "pendente" | "em_progresso" | "concluido";
-type OrderSource = "mesa_qr" | "balcao";
-
-type AdminOrderItem = {
-  drinkName: string;
-  qty: number;
-  unitPrice: number;
-  lineTotal: number;
-  notes?: string | null;
-  drinkNotes?: string | null;
-  itemNotes?: string | null;
-};
-
-type AdminOrder = {
-  id: string;
-  code: string;
-  customerName: string | null;
-  customerPhone: string | null;
-  notes: string | null;
-  status: OrderStatus;
-  source?: OrderSource | null;
-  tableCode?: string | null;
-  subtotal: number;
-  createdAt: string;
-  updatedAt: string;
-  items: AdminOrderItem[];
-};
 
 function exportAsCsv(payload: ExportPayload) {
   const ingredientsRows = payload.ingredients.map((i) => ({
@@ -622,244 +267,6 @@ function parseCombinedCsv(text: string): Partial<ExportPayload> {
   return out;
 }
 
-/* ------------------------- numeric input ------------------------- */
-
-function NumberField(props: {
-  value: number;
-  onCommit: (n: number) => void;
-  decimals: number; // 2 para preço; 0 para ml
-  min?: number;
-  max?: number;
-  style?: React.CSSProperties;
-  inputMode?: "decimal" | "numeric";
-}) {
-  const { value, onCommit, decimals, min, max, style, inputMode } = props;
-  const [text, setText] = useState<string>(formatFixed(value, decimals));
-  const [focused, setFocused] = useState(false);
-
-  // sync from outside when not editing
-  useEffect(() => {
-    if (!focused) setText(formatFixed(value, decimals));
-  }, [value, decimals, focused]);
-
-  const commit = () => {
-    const parsed = parseNumberLoose(text);
-    if (parsed === null) {
-      // volta pro valor atual se vazio/ inválido
-      setText(formatFixed(value, decimals));
-      return;
-    }
-    let n = parsed;
-    if (typeof min === "number") n = Math.max(min, n);
-    if (typeof max === "number") n = Math.min(max, n);
-
-    // normalize decimals
-    const factor = Math.pow(10, decimals);
-    n = Math.round(n * factor) / factor;
-
-    onCommit(n);
-    setText(formatFixed(n, decimals));
-  };
-
-  return (
-    <input
-      style={style}
-      inputMode={inputMode ?? "decimal"}
-      value={text}
-      onFocus={() => setFocused(true)}
-      onBlur={() => {
-        setFocused(false);
-        commit();
-      }}
-      onChange={(e) => setText(e.target.value)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          (e.target as HTMLInputElement).blur();
-        }
-        if (e.key === "Escape") {
-          setText(formatFixed(value, decimals));
-          (e.target as HTMLInputElement).blur();
-        }
-      }}
-    />
-  );
-}
-
-/* ------------------------------ UI ------------------------------ */
-const FONT_SCALE = {
-  sm: 12,
-  md: 14,
-  lg: 18,
-} as const;
-const QZ_TEST_SIZE_TO_SCALE: Record<QzTextSizePreset, number> = {
-  normal: 1,
-  "2x": 2,
-  "3x": 3,
-};
-const QZ_TEST_SIZE_TO_ESC_POS: Record<QzTextSizePreset, string> = {
-  normal: "\x1D\x21\x00",
-  "2x": "\x1D\x21\x11",
-  "3x": "\x1D\x21\x22",
-};
-
-function qzTestColumnsForSize(baseWidth: number, preset: QzTextSizePreset) {
-  return Math.max(8, Math.floor(baseWidth / QZ_TEST_SIZE_TO_SCALE[preset]));
-}
-
-function qzTestCenterLine(text: string, width: number) {
-  const safe = text.trim();
-  if (safe.length >= width) return safe.slice(0, width);
-  const leftPadding = Math.floor((width - safe.length) / 2);
-  return `${" ".repeat(leftPadding)}${safe}`;
-}
-
-function qzTestLeftRightLine(left: string, right: string, width: number) {
-  const safeLeft = left.trim();
-  const safeRight = right.trim();
-  const maxLeftLen = Math.max(0, width - safeRight.length - 1);
-  const croppedLeft = safeLeft.length > maxLeftLen ? safeLeft.slice(0, maxLeftLen) : safeLeft;
-  const spaces = Math.max(1, width - croppedLeft.length - safeRight.length);
-  return `${croppedLeft}${" ".repeat(spaces)}${safeRight}`;
-}
-
-function isLikelyVirtualPrinter(name: string) {
-  const n = name.trim().toLowerCase();
-  return n.includes("fax") || n.includes("pdf") || n.includes("xps");
-}
-
-function choosePreferredPrinter(candidates: string[]) {
-  const cleaned = candidates.map((name) => name.trim()).filter(Boolean);
-  if (!cleaned.length) return "";
-  const nonVirtual = cleaned.find((name) => !isLikelyVirtualPrinter(name));
-  return nonVirtual ?? cleaned[0];
-}
-
-function pillStyle(active: boolean): React.CSSProperties {
-  return {
-    padding: "8px 10px",
-    borderRadius: 999,
-    border: "1px solid var(--border)",
-    background: active ? "var(--pillActive)" : "var(--pill)",
-    cursor: "pointer",
-    userSelect: "none",
-    whiteSpace: "nowrap",
-  };
-}
-
-function compactPillStyle(active: boolean): React.CSSProperties {
-  return {
-    ...pillStyle(active),
-    padding: "4px 6px",
-    fontSize: FONT_SCALE.sm,
-    fontWeight: 600,
-    textAlign: "center",
-    width: "100%",
-    minWidth: 0,
-  };
-}
-
-function ScrollShadow(props: {
-  axis: "x" | "y";
-  style?: React.CSSProperties;
-  children: React.ReactNode;
-}) {
-  const { axis, style, children } = props;
-  const ref = useRef<HTMLDivElement | null>(null);
-  const [showStart, setShowStart] = useState(false);
-  const [showEnd, setShowEnd] = useState(false);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-
-    const update = () => {
-      if (axis === "x") {
-        const max = el.scrollWidth - el.clientWidth;
-        setShowStart(el.scrollLeft > 1);
-        setShowEnd(max - el.scrollLeft > 1);
-        return;
-      }
-
-      const max = el.scrollHeight - el.clientHeight;
-      setShowStart(el.scrollTop > 1);
-      setShowEnd(max - el.scrollTop > 1);
-    };
-
-    update();
-    el.addEventListener("scroll", update, { passive: true });
-    window.addEventListener("resize", update);
-    return () => {
-      el.removeEventListener("scroll", update);
-      window.removeEventListener("resize", update);
-    };
-  }, [axis, children]);
-
-  const viewportStyle: React.CSSProperties =
-    axis === "x"
-      ? { overflowX: "auto", overflowY: "hidden", ...style }
-      : { overflowY: "auto", overflowX: "hidden", ...style };
-
-  return (
-    <div style={{ position: "relative" }}>
-      <div ref={ref} style={viewportStyle}>{children}</div>
-
-      {axis === "x" && showStart ? (
-        <div
-          style={{
-            pointerEvents: "none",
-            position: "absolute",
-            left: 0,
-            top: 0,
-            bottom: 0,
-            width: 14,
-            background: "linear-gradient(to right, rgba(255,255,255,0.95), rgba(255,255,255,0))",
-          }}
-        />
-      ) : null}
-      {axis === "x" && showEnd ? (
-        <div
-          style={{
-            pointerEvents: "none",
-            position: "absolute",
-            right: 0,
-            top: 0,
-            bottom: 0,
-            width: 14,
-            background: "linear-gradient(to left, rgba(255,255,255,0.95), rgba(255,255,255,0))",
-          }}
-        />
-      ) : null}
-
-      {axis === "y" && showStart ? (
-        <div
-          style={{
-            pointerEvents: "none",
-            position: "absolute",
-            left: 0,
-            right: 0,
-            top: 0,
-            height: 14,
-            background: "linear-gradient(to bottom, rgba(255,255,255,0.95), rgba(255,255,255,0))",
-          }}
-        />
-      ) : null}
-      {axis === "y" && showEnd ? (
-        <div
-          style={{
-            pointerEvents: "none",
-            position: "absolute",
-            left: 0,
-            right: 0,
-            bottom: 0,
-            height: 14,
-            background: "linear-gradient(to top, rgba(255,255,255,0.95), rgba(255,255,255,0))",
-          }}
-        />
-      ) : null}
-    </div>
-  );
-}
-
 export default function Page() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const csvInputRef = useRef<HTMLInputElement | null>(null);
@@ -872,7 +279,7 @@ export default function Page() {
   const [adminUserId, setAdminUserId] = useState<string | null>(null);
   const [remoteError, setRemoteError] = useState<string>("");
 
-  const [tab, setTab] = useState<"receitas" | "drinks" | "ingredients" | "settings" | "orders">("receitas");
+  const [tab, setTab] = useState<"receitas" | "drinks" | "ingredients" | "settings">("receitas");
   const [activeDrinkId, setActiveDrinkId] = useState<string | null>(null);
   const [activeIngredientId, setActiveIngredientId] = useState<string | null>(null);
   const [ingredientCategoryTab, setIngredientCategoryTab] = useState<IngredientCategory>(INGREDIENT_CATEGORIES[0]);
@@ -880,27 +287,17 @@ export default function Page() {
   const [menuSearch, setMenuSearch] = useState("");
   const [cartaViewMode, setCartaViewMode] = useState<CartaViewMode>("cards");
   const [recipeSortMode, setRecipeSortMode] = useState<RecipeSortMode>("alpha_asc");
-  const [orders, setOrders] = useState<AdminOrder[]>([]);
-  const [ordersLoading, setOrdersLoading] = useState(false);
-  const [ordersError, setOrdersError] = useState("");
-  const [updatingOrderId, setUpdatingOrderId] = useState<string | null>(null);
-  const [ordersUpdatedAt, setOrdersUpdatedAt] = useState<string | null>(null);
-  const [expandedCompletedOrders, setExpandedCompletedOrders] = useState<Record<string, boolean>>({});
-  const pendingBucketRef = useRef<HTMLDivElement | null>(null);
-  const inProgressBucketRef = useRef<HTMLDivElement | null>(null);
-  const [completedBucketMaxHeight, setCompletedBucketMaxHeight] = useState<number | null>(null);
   const [settingsTab, setSettingsTab] = useState<"geral" | "impressao">("geral");
-  const [qzPrinterName, setQzPrinterName] = useState("");
-  const [qzLayoutOptions, setQzLayoutOptions] = useState<Array<{ id: string; name: string }>>([
-    { id: DEFAULT_PRINT_LAYOUT_ID, name: "Padrao" },
-  ]);
-  const [qzActiveLayoutId, setQzActiveLayoutId] = useState(DEFAULT_PRINT_LAYOUT_ID);
-  const [qzBusy, setQzBusy] = useState(false);
-  const [qzError, setQzError] = useState("");
-  const [qzConnectionState, setQzConnectionState] = useState<QzConnectionState>("disconnected");
-  const qzLoaderRef = useRef<Promise<QzApi> | null>(null);
-  const qzSecurityReadyRef = useRef(false);
   const routePrintTabAppliedRef = useRef(false);
+  const {
+    qzConnectionState,
+    qzPrinterName,
+    setQzPrinterName,
+    qzBusy,
+    qzError,
+    connectQz,
+    printStyledTestViaQz,
+  } = useQzConnection();
 
   const remoteState: AppStatePayload = useMemo(
     () => ({
@@ -1042,345 +439,6 @@ export default function Page() {
 
     return () => clearTimeout(timeout);
   }, [hydratingRemote, localStateJson]);
-
-  const loadQz = useCallback(async () => {
-    if (window.qz) return window.qz;
-    if (qzLoaderRef.current) return qzLoaderRef.current;
-
-    qzLoaderRef.current = new Promise<QzApi>((resolve, reject) => {
-      const scriptSources = [
-        "https://cdn.jsdelivr.net/npm/qz-tray@2.2.5/qz-tray.js",
-        "https://unpkg.com/qz-tray@2.2.5/qz-tray.js",
-        "https://localhost:8181/qz-tray.js",
-        "http://localhost:8181/qz-tray.js",
-        "https://localhost:8182/qz-tray.js",
-        "http://localhost:8182/qz-tray.js",
-      ];
-
-      const tryLoad = (index: number) => {
-        if (window.qz) {
-          resolve(window.qz);
-          return;
-        }
-        if (index >= scriptSources.length) {
-          reject(new Error("Não foi possível carregar qz-tray.js (CDN e localhost 8181/8182)."));
-          return;
-        }
-
-        const script = document.createElement("script");
-        script.src = scriptSources[index];
-        script.async = true;
-        script.onload = () => {
-          if (window.qz) {
-            resolve(window.qz);
-          } else {
-            tryLoad(index + 1);
-          }
-        };
-        script.onerror = () => {
-          script.remove();
-          tryLoad(index + 1);
-        };
-        document.head.appendChild(script);
-      };
-
-      tryLoad(0);
-    });
-
-    try {
-      return await qzLoaderRef.current;
-    } catch (error) {
-      qzLoaderRef.current = null;
-      throw error;
-    }
-  }, []);
-
-  const configureQzSecurity = useCallback(async (qz: QzApi) => {
-    if (qzSecurityReadyRef.current) return;
-    if (!qz.security?.setCertificatePromise || !qz.security?.setSignaturePromise) {
-      throw new Error("API de segurança do QZ Tray indisponível.");
-    }
-
-    const certRes = await fetch("/api/qz/certificate", { cache: "no-store" });
-    const certText = await certRes.text();
-    if (!certRes.ok) {
-      throw new Error(certText || "Falha ao carregar certificado QZ.");
-    }
-
-    const certificate = certText.trim();
-    if (!certificate) {
-      throw new Error("Certificado QZ vazio.");
-    }
-
-    qz.security.setSignatureAlgorithm?.("SHA512");
-    qz.security.setCertificatePromise((resolve) => resolve(certificate));
-    qz.security.setSignaturePromise(async (toSign) => {
-      const signRes = await fetch("/api/qz/sign", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ toSign }),
-      });
-      const payload = (await signRes.json()) as { signature?: string; error?: string };
-      if (!signRes.ok || !payload.signature) {
-        throw new Error(payload.error ?? "Falha ao assinar requisição QZ.");
-      }
-      return payload.signature;
-    });
-
-    qzSecurityReadyRef.current = true;
-  }, []);
-
-  const refreshQzWindowConnection = useCallback(() => {
-    try {
-      setQzConnectionState(window.qz?.websocket.isActive() ? "connected" : "disconnected");
-    } catch {
-      setQzConnectionState("disconnected");
-    }
-  }, []);
-
-  const connectQz = useCallback(async () => {
-    setQzBusy(true);
-    setQzError("");
-    try {
-      const qz = await loadQz();
-      await configureQzSecurity(qz);
-      if (!qz.websocket.isActive()) {
-        await qz.websocket.connect({ retries: 2, delay: 1 });
-      }
-      setQzConnectionState("connected");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Falha ao conectar com QZ Tray.";
-      setQzError(`${message} Inicie o QZ Tray e permita a conexão do site.`);
-      setQzConnectionState("disconnected");
-    } finally {
-      setQzBusy(false);
-    }
-  }, [configureQzSecurity, loadQz]);
-
-  const resolveSelectedQzPrinter = useCallback(async (qz: QzApi) => {
-    const typedName = qzPrinterName.trim();
-    if (typedName) {
-      const typedFound = await qz.printers.find(typedName);
-      const typedList = typeof typedFound === "string" ? [typedFound] : typedFound;
-      const exact = (typedList ?? []).find((name) => name.trim().toLowerCase() === typedName.toLowerCase());
-      const fallbackTyped = choosePreferredPrinter(typedList ?? []);
-      const resolvedTyped = (exact ?? fallbackTyped ?? "").trim();
-      if (resolvedTyped) return resolvedTyped;
-    }
-
-    if (typeof qz.printers.getDefault === "function") {
-      const defaultPrinter = (await qz.printers.getDefault())?.trim() ?? "";
-      if (defaultPrinter) return defaultPrinter;
-    }
-
-    const discovered = await qz.printers.find();
-    const list = typeof discovered === "string" ? [discovered] : discovered;
-    const resolved = choosePreferredPrinter(list ?? []);
-    if (!resolved) throw new Error("Nenhuma impressora encontrada pelo QZ Tray.");
-    return resolved;
-  }, [qzPrinterName]);
-
-  const printStyledTestViaQz = useCallback(async () => {
-    setQzBusy(true);
-    setQzError("");
-    try {
-      const qz = await loadQz();
-      await configureQzSecurity(qz);
-      if (!qz.websocket.isActive()) {
-        await qz.websocket.connect({ retries: 2, delay: 1 });
-      }
-      const resolved = await resolveSelectedQzPrinter(qz);
-      const config = qz.configs.create(resolved, { encoding: "ISO-8859-1", copies: 1 });
-      const width = 32;
-      const nl = "\n";
-      const now = new Date().toLocaleString("pt-BR");
-      const totalText = "R$ 123,45";
-      const out: string[] = [];
-      out.push("\x1B\x40");
-
-      out.push("\x1B\x45\x01");
-      out.push("\x1B\x61\x01");
-      out.push(QZ_TEST_SIZE_TO_ESC_POS["2x"]);
-      const titleWidth = qzTestColumnsForSize(width, "2x");
-      out.push(`${qzTestCenterLine("TESTE AVANCADO", titleWidth)}${nl}`);
-      out.push(`${qzTestCenterLine("QZ + ESC/POS", titleWidth)}${nl}`);
-      out.push(QZ_TEST_SIZE_TO_ESC_POS.normal);
-      out.push("\x1B\x45\x00");
-      out.push("\x1B\x61\x00");
-      out.push(`${"=".repeat(width)}${nl}`);
-      out.push(`Data: ${now}${nl}`);
-      out.push(`Titulo: 2X${nl}`);
-      out.push(`Total: 2X${nl}`);
-      out.push(`${"-".repeat(width)}${nl}`);
-      out.push(`Item de teste${nl}`);
-      out.push(`${qzTestLeftRightLine("1 x R$ 123,45", "R$ 123,45", width)}${nl}`);
-      out.push(`${"=".repeat(width)}${nl}`);
-      out.push("\x1B\x45\x01");
-      out.push(QZ_TEST_SIZE_TO_ESC_POS["2x"]);
-      const totalWidth = qzTestColumnsForSize(width, "2x");
-      out.push(`${qzTestLeftRightLine("TOTAL", totalText, totalWidth)}${nl}`);
-      out.push(QZ_TEST_SIZE_TO_ESC_POS.normal);
-      out.push("\x1B\x45\x00");
-      out.push(`${nl}${nl}`);
-      out.push("\x1D\x56\x41\x10");
-      const sample = out.join("");
-      await qz.print(config, [{ type: "raw", format: "command", flavor: "plain", data: sample }]);
-      setQzConnectionState("connected");
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Falha ao testar impressão avançada via QZ Tray.";
-      setQzError(message);
-      setQzConnectionState("disconnected");
-    } finally {
-      setQzBusy(false);
-    }
-  }, [configureQzSecurity, loadQz, resolveSelectedQzPrinter]);
-
-
-  useEffect(() => {
-    try {
-      const savedPrinter = localStorage.getItem(QZ_PRINTER_STORAGE_KEY);
-      if (savedPrinter) {
-        setQzPrinterName(savedPrinter);
-      }
-      const layouts = getLayoutsFromStorage();
-      setQzLayoutOptions(buildLayoutOptions(layouts));
-      setQzActiveLayoutId(getActiveLayoutIdFromStorage());
-    } catch {
-      // ignorar indisponibilidade de storage
-    }
-  }, []);
-
-  useEffect(() => {
-    try {
-      setActiveLayoutIdInStorage(qzActiveLayoutId);
-    } catch {
-      // ignorar indisponibilidade de storage
-    }
-  }, [qzActiveLayoutId]);
-
-  useEffect(() => {
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key !== null && event.key !== QZ_LAYOUTS_STORAGE_KEY && event.key !== QZ_ACTIVE_LAYOUT_STORAGE_KEY) return;
-      try {
-        const layouts = getLayoutsFromStorage();
-        setQzLayoutOptions(buildLayoutOptions(layouts));
-        setQzActiveLayoutId(getActiveLayoutIdFromStorage());
-      } catch {
-        // ignorar indisponibilidade de storage
-      }
-    };
-    window.addEventListener("storage", handleStorage);
-    return () => window.removeEventListener("storage", handleStorage);
-  }, []);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(QZ_PRINTER_STORAGE_KEY, qzPrinterName);
-    } catch {
-      // ignorar indisponibilidade de storage
-    }
-  }, [qzPrinterName]);
-
-  useEffect(() => {
-    refreshQzWindowConnection();
-    const interval = window.setInterval(refreshQzWindowConnection, 2000);
-    return () => window.clearInterval(interval);
-  }, [refreshQzWindowConnection]);
-
-  const loadOrders = useCallback(async (options?: { background?: boolean }) => {
-    const background = Boolean(options?.background);
-    if (!background) {
-      setOrdersLoading(true);
-      setOrdersError("");
-    }
-
-    try {
-      const params = new URLSearchParams();
-      if (ordersUpdatedAt) params.set("since", ordersUpdatedAt);
-      const endpoint = params.size ? `/api/orders?${params.toString()}` : "/api/orders";
-      const res = await fetch(endpoint, { cache: "no-store" });
-
-      if (res.status === 304) {
-        return;
-      }
-
-      const payload = (await res.json()) as { orders?: AdminOrder[]; updatedAt?: string | null; error?: string };
-      if (!res.ok) {
-        setOrdersError(payload.error ?? "Falha ao carregar pedidos.");
-        return;
-      }
-      const normalizedOrders = (Array.isArray(payload.orders) ? payload.orders : []).map((order) => ({
-        ...order,
-        items: (Array.isArray(order.items) ? order.items : []).map((item) => {
-          const notes =
-            typeof item.drinkNotes === "string"
-              ? item.drinkNotes
-              : typeof item.itemNotes === "string"
-              ? item.itemNotes
-              : typeof item.notes === "string"
-              ? item.notes
-              : null;
-          return {
-            ...item,
-            notes,
-            drinkNotes: notes,
-          };
-        }),
-      }));
-      setOrders(normalizedOrders);
-      setOrdersUpdatedAt(typeof payload.updatedAt === "string" ? payload.updatedAt : null);
-    } catch {
-      if (!background) {
-        setOrdersError("Erro de rede ao carregar pedidos.");
-      }
-    } finally {
-      if (!background) {
-        setOrdersLoading(false);
-      }
-    }
-  }, [ordersUpdatedAt]);
-
-  useEffect(() => {
-    if (tab !== "orders") return;
-    void loadOrders();
-    const interval = setInterval(() => {
-      void loadOrders({ background: true });
-    }, 15000);
-    return () => {
-      clearInterval(interval);
-    };
-  }, [tab, loadOrders]);
-
-  useEffect(() => {
-    if (tab === "orders") {
-      setTab("receitas");
-    }
-  }, [tab]);
-
-  const moveOrderTo = useCallback(
-    async (orderId: string, status: OrderStatus) => {
-      setUpdatingOrderId(orderId);
-      setOrdersError("");
-      try {
-        const res = await fetch(`/api/orders/${orderId}/status`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status }),
-        });
-        const payload = (await res.json()) as { error?: string };
-        if (!res.ok) {
-          setOrdersError(payload.error ?? "Falha ao atualizar pedido.");
-          return;
-        }
-        await loadOrders();
-      } catch {
-        setOrdersError("Erro de rede ao atualizar pedido.");
-      } finally {
-        setUpdatingOrderId(null);
-      }
-    },
-    [loadOrders]
-  );
 
   // seed: 3 drinks
   useEffect(() => {
@@ -1681,101 +739,26 @@ export default function Page() {
 
   const page: React.CSSProperties = {
     ...themeVars,
-    background: "var(--bg)",
+    backgroundColor: "var(--bg)",
     minHeight: "100vh",
     color: "var(--ink)",
     padding: 24,
     fontFamily: 'var(--font-app-sans), "Trebuchet MS", "Segoe UI", sans-serif',
   };
 
+  // aliases locais para os estilos exportados (evita renomear cada uso no JSX)
   const container: React.CSSProperties = { maxWidth: 1160, margin: "0 auto" };
-
-  const card: React.CSSProperties = {
-    background: "var(--panel)",
-    border: "1px solid var(--border)",
-    borderRadius: 18,
-    padding: 16,
-    boxShadow: "var(--shadow)",
-  };
-
-  const headerCard: React.CSSProperties = {
-    ...card,
-    background: "var(--panel2)",
-  };
-
-  const btn: React.CSSProperties = {
-    padding: "10px 13px",
-    borderRadius: 12,
-    border: "1px solid var(--border)",
-    background: "var(--btn)",
-    cursor: "pointer",
-    fontWeight: 600,
-  };
-
-  const btnDanger: React.CSSProperties = {
-    ...btn,
-    background: "var(--danger)",
-    borderColor: "var(--dangerBorder)",
-  };
-
-  const iconBtn: React.CSSProperties = {
-    width: 36,
-    height: 36,
-    borderRadius: 10,
-    border: "1px solid var(--border)",
-    background: "var(--btn)",
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    cursor: "pointer",
-    fontSize: FONT_SCALE.md,
-    fontWeight: 700,
-    lineHeight: 1,
-  };
-
-  const iconBtnDanger: React.CSSProperties = {
-    ...iconBtn,
-    background: "var(--danger)",
-    borderColor: "var(--dangerBorder)",
-  };
-
-  const input: React.CSSProperties = {
-    width: "100%",
-    padding: 12,
-    borderRadius: 12,
-    border: "1px solid var(--border)",
-    background: "white",
-    outline: "none",
-  };
-
-  const small: React.CSSProperties = { fontSize: FONT_SCALE.sm, color: "var(--muted)" };
-
-  const topTab = (active: boolean): React.CSSProperties => ({
-    ...btn,
-    background: active ? "var(--pillActive)" : "var(--pill)",
-  });
-
-  const categoryButtonStyle = (active: boolean, isAdd = false): React.CSSProperties => ({
-    border: "1px solid var(--border)",
-    background: active ? "var(--pillActive)" : "var(--pill)",
-    borderRadius: 12,
-    padding: isAdd ? "8px 10px" : "8px 16px",
-    fontSize: FONT_SCALE.sm,
-    fontWeight: 700,
-    cursor: "pointer",
-    whiteSpace: "nowrap",
-    textAlign: "center",
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-  });
-
-  const ingredientButtonStyle = (active: boolean): React.CSSProperties => ({
-    ...pillStyle(active),
-    borderRadius: 12,
-    fontSize: FONT_SCALE.sm,
-    fontWeight: 600,
-  });
+  const card = adminCard;
+  const headerCard = adminHeaderCard;
+  const btn = adminBtn;
+  const btnDanger = adminBtnDanger;
+  const iconBtn = adminIconBtn;
+  const iconBtnDanger = adminIconBtnDanger;
+  const input = adminInput;
+  const small = adminSmall;
+  const topTab = adminTopTab;
+  const categoryButtonStyle = adminCategoryButtonStyle;
+  const ingredientButtonStyle = adminIngredientButtonStyle;
 
   const focusStyle = `
     input:focus, textarea:focus, select:focus {
@@ -1861,42 +844,6 @@ export default function Page() {
     );
   }, [drinks, menuSearch, computedByDrinkId, ingredientMap, settings.roundingMode, settings.markup, settings.targetCmv, recipeSortMode]);
 
-  const groupedOrders = useMemo(
-    () => ({
-      pendente: orders.filter((order) => order.status === "pendente"),
-      em_progresso: orders.filter((order) => order.status === "em_progresso"),
-      concluido: orders.filter((order) => order.status === "concluido"),
-    }),
-    [orders]
-  );
-
-  const formatOrderDate = (iso: string) =>
-    new Date(iso).toLocaleString("pt-BR", {
-      day: "2-digit",
-      month: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-
-  const toggleCompletedOrderCard = useCallback((orderId: string) => {
-    setExpandedCompletedOrders((prev) => ({ ...prev, [orderId]: !prev[orderId] }));
-  }, []);
-
-  useEffect(() => {
-    if (tab !== "orders") return;
-
-    const updateCompletedBucketMaxHeight = () => {
-      const pendingHeight = pendingBucketRef.current?.offsetHeight ?? 0;
-      const inProgressHeight = inProgressBucketRef.current?.offsetHeight ?? 0;
-      const maxHeight = Math.max(pendingHeight, inProgressHeight);
-      setCompletedBucketMaxHeight(maxHeight > 0 ? maxHeight : null);
-    };
-
-    updateCompletedBucketMaxHeight();
-    window.addEventListener("resize", updateCompletedBucketMaxHeight);
-    return () => window.removeEventListener("resize", updateCompletedBucketMaxHeight);
-  }, [tab, groupedOrders, expandedCompletedOrders, ordersLoading, ordersError]);
-
   useEffect(() => {
     if (hydratingRemote || typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
@@ -1915,1145 +862,118 @@ export default function Page() {
       <style>{focusStyle}</style>
 
       <div style={container}>
-        <div style={{ ...headerCard, marginBottom: 14 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
-            <div>
-              <h1 style={{ margin: 0, fontSize: FONT_SCALE.lg, letterSpacing: -0.2 }}>Custos de Drinks</h1>
-              <div style={small}>Área interna da operação • Arredondamento psicológico • Inputs numéricos editáveis</div>
-              {remoteError ? <div style={{ ...small, color: "#b00020", marginTop: 4 }}>{remoteError}</div> : null}
-            </div>
+        <div style={{ ...headerCard, marginBottom: 14, padding: "12px 16px" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <button style={topTab(tab === "receitas")} onClick={() => setTab("receitas")}>Resumo</button>
+            <button style={topTab(tab === "drinks")} onClick={() => setTab("drinks")}>Drinks</button>
+            <button style={topTab(tab === "ingredients")} onClick={() => setTab("ingredients")}>Ingredientes</button>
 
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-              <button style={btn} onClick={logout}>
-                Sair
-              </button>
-            </div>
-          </div>
+            {remoteError && <div style={{ ...small, color: "#b00020", marginLeft: 8 }}>{remoteError}</div>}
 
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <Link
-                href="/"
-                target="_blank"
-                rel="noreferrer"
-                style={{ ...topTab(false), textDecoration: "none", display: "inline-flex", alignItems: "center" }}
-              >
-                Cardápio Público
-              </Link>
-              <button style={topTab(tab === "receitas")} onClick={() => setTab("receitas")}>Resumo</button>
-              <button style={topTab(tab === "drinks")} onClick={() => setTab("drinks")}>Drinks</button>
-              <button style={topTab(tab === "ingredients")} onClick={() => setTab("ingredients")}>Ingredientes</button>
-              <button style={topTab(tab === "settings")} onClick={() => setTab("settings")}>Configurações</button>
-            </div>
+            <div style={{ flex: 1 }} />
 
-            <Link href="/admin/pedidos" style={{ ...topTab(false), textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
-              Pedidos
-            </Link>
+            <button
+              style={{ ...topTab(tab === "settings"), display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+              onClick={() => setTab("settings")}
+              title="Configurações"
+              aria-label="Configurações"
+            >
+              <span className="material-symbols-rounded" style={{ fontSize: 18 }}>settings</span>
+            </button>
           </div>
         </div>
 
         {/* -------------------- RECEITAS -------------------- */}
         {tab === "receitas" && (
-          <div style={card}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-              <h2 style={{ marginTop: 0, fontSize: FONT_SCALE.lg, marginBottom: 10 }}>Resumo</h2>
-              <div style={small}>
-                Arredondamento: {settings.roundingMode === "none" ? "Nenhum" : settings.roundingMode === "end_90" ? ",90" : settings.roundingMode === "end_00" ? ",00" : ",50"}
-              </div>
-            </div>
-
-            <input
-              style={input}
-              placeholder="Buscar drink..."
-              value={menuSearch}
-              onChange={(e) => setMenuSearch(e.target.value)}
-            />
-
-            <div style={{ marginTop: 10, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <div style={small}>Visualização do Resumo</div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <div style={pillStyle(cartaViewMode === "cards")} onClick={() => setCartaViewMode("cards")}>
-                    Cards
-                  </div>
-                  <div style={pillStyle(cartaViewMode === "list")} onClick={() => setCartaViewMode("list")}>
-                    Lista
-                  </div>
-                </div>
-              </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <label htmlFor="recipe-sort" style={small}>Ordenar por</label>
-                <select
-                  id="recipe-sort"
-                  style={{ ...input, width: "auto", minWidth: 240, padding: "10px 12px" }}
-                  value={recipeSortMode}
-                  onChange={(e) => setRecipeSortMode(e.target.value as RecipeSortMode)}
-                >
-                  <option value="alpha_asc">Alfabética (A-Z)</option>
-                  <option value="alpha_desc">Alfabética (Z-A)</option>
-                  <option value="price_asc">Preço (menor-maior)</option>
-                  <option value="price_desc">Preço (maior-menor)</option>
-                  <option value="cost_asc">Custo (menor-maior)</option>
-                  <option value="cost_desc">Custo (maior-menor)</option>
-                </select>
-              </div>
-            </div>
-
-            <div
-              style={
-                cartaViewMode === "cards"
-                  ? { marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }
-                  : { marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }
-              }
-            >
-              {cartaRows.map(({ d, prices, publicPrice, ingredientLines, nameWidthCh }) =>
-                cartaViewMode === "cards" ? (
-                  <div
-                    key={d.id}
-                    style={{
-                      border: "1px solid var(--border)",
-                      borderRadius: 16,
-                      background: "white",
-                      overflow: "hidden",
-                      aspectRatio: "4 / 6.4",
-                      display: "grid",
-                      gridTemplateRows: "1fr 1fr",
-                    }}
-                  >
-                    <div
-                      style={{
-                        minHeight: 0,
-                        background: "var(--panel2)",
-                        borderBottom: "1px solid var(--border)",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        color: "var(--muted)",
-                        fontSize: FONT_SCALE.sm,
-                      }}
-                    >
-                      {d.photoDataUrl ? (
-                        <img src={d.photoDataUrl} alt={d.name} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                      ) : (
-                        "Sem foto"
-                      )}
-                    </div>
-
-                    <div style={{ padding: 8, minHeight: 0, overflow: "hidden" }}>
-                      <div style={{ fontSize: FONT_SCALE.md, fontWeight: 700, lineHeight: 1.15 }}>{d.name}</div>
-                      {d.notes ? <div style={{ ...small, marginTop: 3, fontSize: FONT_SCALE.sm }}>{d.notes}</div> : null}
-                      <label style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6, fontSize: FONT_SCALE.sm }}>
-                        <input
-                          type="checkbox"
-                          checked={Boolean(d.showOnPublicMenu)}
-                          onChange={(e) => updateDrink(d.id, { showOnPublicMenu: e.target.checked })}
-                        />
-                        Exibir no cardápio público
-                      </label>
-
-                      <div style={{ marginTop: 8 }}>
-                        <div style={{ ...small, fontSize: FONT_SCALE.sm }}>Preço no cardápio público</div>
-                        <div
-                          style={{
-                            marginTop: 4,
-                            display: "grid",
-                            gridTemplateColumns: "1fr 1fr 1fr 58px",
-                            gap: 4,
-                            alignItems: "center",
-                          }}
-                        >
-                          <div style={compactPillStyle((d.publicMenuPriceMode ?? "markup") === "markup")} onClick={() => updateDrink(d.id, { publicMenuPriceMode: "markup" })}>
-                            Markup
-                          </div>
-                          <div style={compactPillStyle(d.publicMenuPriceMode === "cmv")} onClick={() => updateDrink(d.id, { publicMenuPriceMode: "cmv" })}>
-                            CMV
-                          </div>
-                          <div style={compactPillStyle(d.publicMenuPriceMode === "manual")} onClick={() => updateDrink(d.id, { publicMenuPriceMode: "manual" })}>
-                            Manual
-                          </div>
-                          <NumberField
-                            style={{ ...input, width: 58, padding: "4px 6px", fontSize: FONT_SCALE.sm, borderRadius: 999, textAlign: "center" }}
-                            value={d.manualPublicPrice ?? 0}
-                            decimals={2}
-                            min={0}
-                            onCommit={(n) => updateDrink(d.id, { manualPublicPrice: n })}
-                          />
-                        </div>
-                        <div style={{ ...small, marginTop: 4, fontSize: FONT_SCALE.sm }}>
-                          Preço selecionado: {formatBRL(publicPrice)}
-                        </div>
-                      </div>
-
-                      <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 4 }}>
-                        {prices.map((p) => (
-                          <div key={p.label} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                            <div style={{ ...small, fontSize: FONT_SCALE.sm }}>{p.label}</div>
-                            <div style={{ fontSize: FONT_SCALE.md, fontWeight: 650 }}>{formatBRL(p.value)}</div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                ) : (
-                  <div key={d.id} style={{ border: "1px solid var(--border)", borderRadius: 14, padding: 9, background: "white" }}>
-                    <div
-                      className="recipe-list-grid"
-                      style={{
-                        display: "grid",
-                        gridTemplateColumns: "1.2fr 1.1fr 0.9fr",
-                        gap: 10,
-                        alignItems: "start",
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: "flex",
-                          flexDirection: "column",
-                          justifyContent: "center",
-                          alignItems: "center",
-                          textAlign: "center",
-                          height: "100%",
-                        }}
-                      >
-                        <div style={{ fontSize: FONT_SCALE.lg, fontWeight: 800, lineHeight: 1.1, display: "inline-block", maxWidth: "100%", width: `${nameWidthCh}ch` }}>
-                          {d.name}
-                        </div>
-                        <div
-                          style={{
-                            ...small,
-                            fontSize: FONT_SCALE.sm,
-                            marginTop: 4,
-                            color: "#7a8793",
-                            display: "inline-block",
-                            maxWidth: "100%",
-                            width: `min(${nameWidthCh * 2}ch, 100%)`,
-                          }}
-                        >
-                          {ingredientLines.length ? ingredientLines.join(" • ") : "Sem ingredientes"}
-                        </div>
-                        {d.notes ? <div style={{ ...small, fontSize: FONT_SCALE.sm }}>{d.notes}</div> : null}
-                      </div>
-
-                      <div
-                        style={{
-                          display: "flex",
-                          flexDirection: "column",
-                          justifyContent: "center",
-                          alignItems: "center",
-                          textAlign: "center",
-                          height: "100%",
-                        }}
-                      >
-                        <div style={{ ...small, fontSize: FONT_SCALE.sm }}>Preço no cardápio público</div>
-                        <div
-                          style={{
-                            marginTop: 4,
-                            display: "grid",
-                            gridTemplateColumns: "1fr 1fr 1fr 58px",
-                            gap: 4,
-                            alignItems: "center",
-                            width: "100%",
-                            maxWidth: 260,
-                          }}
-                        >
-                          <div style={compactPillStyle((d.publicMenuPriceMode ?? "markup") === "markup")} onClick={() => updateDrink(d.id, { publicMenuPriceMode: "markup" })}>
-                            Markup
-                          </div>
-                          <div style={compactPillStyle(d.publicMenuPriceMode === "cmv")} onClick={() => updateDrink(d.id, { publicMenuPriceMode: "cmv" })}>
-                            CMV
-                          </div>
-                          <div style={compactPillStyle(d.publicMenuPriceMode === "manual")} onClick={() => updateDrink(d.id, { publicMenuPriceMode: "manual" })}>
-                            Manual
-                          </div>
-                          <NumberField
-                            style={{ ...input, width: 58, padding: "4px 6px", fontSize: FONT_SCALE.sm, borderRadius: 999, textAlign: "center" }}
-                            value={d.manualPublicPrice ?? 0}
-                            decimals={2}
-                            min={0}
-                            onCommit={(n) => updateDrink(d.id, { manualPublicPrice: n })}
-                          />
-                        </div>
-                        <label style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "center", marginTop: 6, fontSize: FONT_SCALE.sm }}>
-                          <input
-                            type="checkbox"
-                            checked={Boolean(d.showOnPublicMenu)}
-                            onChange={(e) => updateDrink(d.id, { showOnPublicMenu: e.target.checked })}
-                          />
-                          Exibir no cardápio público
-                        </label>
-                      </div>
-
-                      <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                        {prices.map((p) => (
-                          <div key={p.label} style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                            <div style={{ ...small, fontSize: FONT_SCALE.sm }}>{p.label}</div>
-                            <div style={{ fontSize: FONT_SCALE.md, fontWeight: 650 }}>{formatBRL(p.value)}</div>
-                          </div>
-                        ))}
-                        <div
-                          style={{
-                            border: "1px solid var(--border)",
-                            borderRadius: 10,
-                            padding: "7px 8px",
-                            background: "var(--panel2)",
-                          }}
-                        >
-                          <div style={{ ...small, fontSize: FONT_SCALE.sm }}>Selecionado</div>
-                          <div style={{ fontSize: FONT_SCALE.md, fontWeight: 700 }}>{formatBRL(publicPrice)}</div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )
-              )}
-
-              {cartaRows.length === 0 && (
-                <div style={{ padding: 14, border: "1px dashed var(--border)", borderRadius: 14, color: "var(--muted)" }}>
-                  Nenhum drink encontrado.
-                </div>
-              )}
-            </div>
-          </div>
+          <ResumoTab
+            settings={settings}
+            cartaViewMode={cartaViewMode}
+            setCartaViewMode={setCartaViewMode}
+            menuSearch={menuSearch}
+            setMenuSearch={setMenuSearch}
+            recipeSortMode={recipeSortMode}
+            setRecipeSortMode={setRecipeSortMode}
+            cartaRows={cartaRows}
+            updateDrink={updateDrink}
+          />
         )}
 
-        {/* -------------------- ORDERS -------------------- */}
-        {tab === "orders" && (
-          <div style={card}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-              <h2 style={{ marginTop: 0, fontSize: FONT_SCALE.lg, marginBottom: 10 }}>Pedidos</h2>
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <div style={small}>
-                  {orders.length} pedido(s)
-                </div>
-                <button style={btn} onClick={() => void loadOrders()} disabled={ordersLoading || Boolean(updatingOrderId)}>
-                  {ordersLoading ? "Atualizando..." : "Atualizar"}
-                </button>
-              </div>
-            </div>
-
-            {ordersError ? <div style={{ ...small, color: "#b00020", marginBottom: 10 }}>{ordersError}</div> : null}
-
-            <div className="orders-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 10 }}>
-              {([
-                ["pendente", "Pendentes"],
-                ["em_progresso", "Em progresso"],
-                ["concluido", "Concluídos"],
-              ] as Array<[OrderStatus, string]>).map(([statusKey, title]) => (
-                <div
-                  key={statusKey}
-                  ref={statusKey === "pendente" ? pendingBucketRef : statusKey === "em_progresso" ? inProgressBucketRef : undefined}
-                  style={{
-                    border: "1px solid var(--border)",
-                    borderRadius: 14,
-                    background: "white",
-                    padding: 10,
-                    display: "flex",
-                    flexDirection: "column",
-                    maxHeight: statusKey === "concluido" && completedBucketMaxHeight ? completedBucketMaxHeight : undefined,
-                  }}
-                >
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                    <strong style={{ fontSize: FONT_SCALE.md }}>{title}</strong>
-                    <div style={small}>{groupedOrders[statusKey].length}</div>
-                  </div>
-
-                  <ScrollShadow
-                    axis="y"
-                    style={{
-                      display: "flex",
-                      flexDirection: "column",
-                      gap: 8,
-                      overflowY: statusKey === "concluido" && completedBucketMaxHeight ? "auto" : "visible",
-                      paddingRight: statusKey === "concluido" ? 4 : 0,
-                      scrollbarWidth: "thin",
-                    }}
-                  >
-                    {groupedOrders[statusKey].map((order) => {
-                      const isCompletedCard = statusKey === "concluido";
-                      const isExpanded = !isCompletedCard || Boolean(expandedCompletedOrders[order.id]);
-                      const statusCardBackground =
-                        statusKey === "pendente" ? "#fff1f1" : statusKey === "em_progresso" ? "#fff8df" : "#ecfdf3";
-                      const statusCardBorder =
-                        statusKey === "pendente" ? "#f2cccc" : statusKey === "em_progresso" ? "#eed9a7" : "#bfe8cf";
-                      const statusButtonStyle: React.CSSProperties =
-                        statusKey === "pendente"
-                          ? { background: "#fde2e2", borderColor: "#e9b9b9" }
-                          : statusKey === "em_progresso"
-                          ? { background: "#fdf0c4", borderColor: "#e8d08d" }
-                          : { background: "#dcfce7", borderColor: "#a7d9bc" };
-
-                      return (
-                      <div
-                        key={order.id}
-                        onClick={isCompletedCard ? () => toggleCompletedOrderCard(order.id) : undefined}
-                        style={{
-                          border: `1px solid ${statusCardBorder}`,
-                          borderRadius: 10,
-                          padding: 9,
-                          background: statusCardBackground,
-                          cursor: isCompletedCard ? "pointer" : "default",
-                        }}
-                      >
-                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
-                          <div style={{ fontWeight: 700, fontSize: FONT_SCALE.sm }}>{order.code}</div>
-                          <div style={{ ...small, fontSize: FONT_SCALE.sm }}>
-                            {formatOrderDate(order.createdAt)}
-                            {isCompletedCard ? (isExpanded ? " • recolher" : " • expandir") : ""}
-                          </div>
-                        </div>
-
-                        <div style={{ ...small, marginTop: 4 }}>
-                          {(order.customerName || "Cliente não informado") + (order.customerPhone ? ` • ${order.customerPhone}` : "")}
-                        </div>
-
-                        <div style={{ ...small, marginTop: 2 }}>
-                          Origem: {order.source === "mesa_qr" && order.tableCode ? `Mesa ${order.tableCode}` : "Balcão"}
-                        </div>
-
-                        {isExpanded ? (
-                          <>
-                            <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
-                              {order.items.map((item, idx) => (
-                                <div key={`${order.id}_${idx}`} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: FONT_SCALE.sm }}>
-                                  <div style={{ display: "grid", gap: 2 }}>
-                                    <div>
-                                      {item.qty}x {item.drinkName}
-                                    </div>
-                                    {item.drinkNotes || item.notes ? (
-                                      <div style={{ ...small, fontSize: FONT_SCALE.sm, marginLeft: 12 }}>
-                                        {item.drinkNotes ?? item.notes}
-                                      </div>
-                                    ) : null}
-                                  </div>
-                                  <div>{formatBRL(item.lineTotal)}</div>
-                                </div>
-                              ))}
-                            </div>
-
-                            {order.notes ? <div style={{ ...small, marginTop: 6 }}>Obs: {order.notes}</div> : null}
-
-                            <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "34px 1fr 34px", alignItems: "center", gap: 8 }}>
-                              {statusKey === "em_progresso" || statusKey === "concluido" ? (
-                                <button
-                                  aria-label="Mover para a esquerda"
-                                  style={{
-                                    ...btn,
-                                    ...statusButtonStyle,
-                                    width: 34,
-                                    height: 34,
-                                    padding: 0,
-                                    borderRadius: 999,
-                                    fontSize: FONT_SCALE.lg,
-                                    lineHeight: 1,
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                  }}
-                                  disabled={updatingOrderId === order.id}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    void moveOrderTo(order.id, "em_progresso" === statusKey ? "pendente" : "em_progresso");
-                                  }}
-                                >
-                                  <span className="material-symbols-rounded" aria-hidden>chevron_left</span>
-                                </button>
-                              ) : (
-                                <div />
-                              )}
-
-                              <strong style={{ fontSize: FONT_SCALE.md, textAlign: "center" }}>Total: {formatBRL(order.subtotal)}</strong>
-
-                              {statusKey === "pendente" || statusKey === "em_progresso" ? (
-                                <button
-                                  aria-label="Mover para a direita"
-                                  style={{
-                                    ...btn,
-                                    ...statusButtonStyle,
-                                    width: 34,
-                                    height: 34,
-                                    padding: 0,
-                                    borderRadius: 999,
-                                    fontSize: FONT_SCALE.lg,
-                                    lineHeight: 1,
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                  }}
-                                  disabled={updatingOrderId === order.id}
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    void moveOrderTo(order.id, statusKey === "pendente" ? "em_progresso" : "concluido");
-                                  }}
-                                >
-                                  <span className="material-symbols-rounded" aria-hidden>chevron_right</span>
-                                </button>
-                              ) : (
-                                <div />
-                              )}
-                            </div>
-                          </>
-                        ) : null}
-                      </div>
-                    )})}
-
-                    {groupedOrders[statusKey].length === 0 && (
-                      <div style={{ padding: 12, border: "1px dashed var(--border)", borderRadius: 12, color: "var(--muted)", fontSize: FONT_SCALE.sm }}>
-                        Sem pedidos nesta coluna.
-                      </div>
-                    )}
-                  </ScrollShadow>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
 
         {/* -------------------- SETTINGS -------------------- */}
         {tab === "settings" && (
-          <div style={card}>
-            <h2 style={{ marginTop: 0, fontSize: FONT_SCALE.lg }}>Configurações</h2>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-              <button style={pillStyle(settingsTab === "geral")} onClick={() => setSettingsTab("geral")}>Geral</button>
-              <button style={pillStyle(settingsTab === "impressao")} onClick={() => setSettingsTab("impressao")}>Impressão</button>
-            </div>
-
-            {settingsTab === "geral" && (
-              <>
-                <div className="settings-grid" style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
-                  <div>
-                    <div style={small}>Markup (x)</div>
-                    <NumberField
-                      style={input}
-                      value={settings.markup}
-                      decimals={2} // preço/regra: 2 casas para valores monetários; markup pode ser fracionário
-                      min={0}
-                      max={100}
-                      onCommit={(n) => setSettings((s) => ({ ...s, markup: n }))}
-                    />
-                  </div>
-
-                  <div>
-                    <div style={small}>CMV alvo (%)</div>
-                    <NumberField
-                      style={input}
-                      value={Math.round(settings.targetCmv * 100)}
-                      decimals={0} // percentual inteiro
-                      min={1}
-                      max={100}
-                      inputMode="numeric"
-                      onCommit={(n) => setSettings((s) => ({ ...s, targetCmv: clamp(n, 1, 100) / 100 }))}
-                    />
-                  </div>
-
-                  <div>
-                    <div style={small}>1 dash = (ml)</div>
-                    <NumberField
-                      style={input}
-                      value={settings.dashMl}
-                      decimals={2}
-                      min={0}
-                      max={10}
-                      onCommit={(n) => setSettings((s) => ({ ...s, dashMl: n }))}
-                    />
-                  </div>
-
-                  <div>
-                    <div style={small}>1 gota = (ml)</div>
-                    <NumberField
-                      style={input}
-                      value={settings.dropMl}
-                      decimals={2}
-                      min={0}
-                      max={1}
-                      onCommit={(n) => setSettings((s) => ({ ...s, dropMl: n }))}
-                    />
-                  </div>
-                </div>
-
-                <div style={{ marginTop: 12 }}>
-                  <div style={{ ...small, marginBottom: 6 }}>Exibir preço (cardápio público)</div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <div style={pillStyle(settings.publicMenuPriceVisibility === "show")} onClick={() => setSettings((s) => ({ ...s, publicMenuPriceVisibility: "show" }))}>Mostrar</div>
-                    <div style={pillStyle(settings.publicMenuPriceVisibility === "none")} onClick={() => setSettings((s) => ({ ...s, publicMenuPriceVisibility: "none" }))}>Ocultar</div>
-                  </div>
-                </div>
-
-                <div style={{ marginTop: 12 }}>
-                  <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <input
-                      type="checkbox"
-                      checked={settings.showPublicMenuGarnish}
-                      onChange={(e) => setSettings((s) => ({ ...s, showPublicMenuGarnish: e.target.checked }))}
-                    />
-                    <span style={small}>Exibir ingredientes da categoria Garnish no cardápio público</span>
-                  </label>
-                </div>
-
-                <div style={{ marginTop: 12 }}>
-                  <div style={{ ...small, marginBottom: 6 }}>Arredondamento psicológico (Resumo e preços)</div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <div style={pillStyle(settings.roundingMode === "none")} onClick={() => setSettings((s) => ({ ...s, roundingMode: "none" }))}>Nenhum</div>
-                    <div style={pillStyle(settings.roundingMode === "end_90")} onClick={() => setSettings((s) => ({ ...s, roundingMode: "end_90" }))}>Terminar em ,90</div>
-                    <div style={pillStyle(settings.roundingMode === "end_50")} onClick={() => setSettings((s) => ({ ...s, roundingMode: "end_50" }))}>Terminar em ,50</div>
-                    <div style={pillStyle(settings.roundingMode === "end_00")} onClick={() => setSettings((s) => ({ ...s, roundingMode: "end_00" }))}>Terminar em ,00</div>
-                  </div>
-                </div>
-
-                <hr style={{ border: 0, borderTop: "1px solid var(--border)", margin: "14px 0" }} />
-
-                <button
-                  style={btnDanger}
-                  onClick={() => {
-                    if (confirm("Apagar todos os dados salvos no navegador?")) {
-                      setIngredients([]);
-                      setDrinks([]);
-                      setSettings({ ...DEFAULT_SETTINGS });
-                      setActiveDrinkId(null);
-                      setActiveIngredientId(null);
-                      setTab("receitas");
-                    }
-                  }}
-                >
-                  Resetar tudo
-                </button>
-
-                <hr style={{ border: 0, borderTop: "1px solid var(--border)", margin: "14px 0" }} />
-
-                <div style={{ display: "grid", gap: 8 }}>
-                  <h3 style={{ margin: 0, fontSize: FONT_SCALE.md }}>Importar e exportar CSV</h3>
-                  <div style={small}>Seção separada para backup e restauração dos dados.</div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    <button style={btn} onClick={() => exportAsCsv({ ingredients, drinks, settings })}>
-                      Exportar CSV
-                    </button>
-                    <button style={btn} onClick={triggerCsvImport}>
-                      Importar CSV
-                    </button>
-                  </div>
-                  <input
-                    ref={csvInputRef}
-                    type="file"
-                    accept=".csv,text/csv"
-                    style={{ display: "none" }}
-                    onChange={async (e) => {
-                      const file = e.target.files?.[0];
-                      if (!file) return;
-
-                      const shouldReplace = confirm("Importar CSV e substituir os dados atuais?");
-                      if (shouldReplace) await importFromCsvFile(file);
-
-                      e.currentTarget.value = "";
-                    }}
-                  />
-                </div>
-              </>
-            )}
-
-            {settingsTab === "impressao" && (
-              <div style={{ display: "grid", gap: 10 }}>
-                <div style={{ ...small, fontWeight: 700 }}>Preferências de impressão dos pedidos</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <span
-                    style={{
-                      fontSize: FONT_SCALE.sm,
-                      fontWeight: 700,
-                      color: qzConnectionState === "connected" ? "#0f5132" : "#7a3e00",
-                      background: qzConnectionState === "connected" ? "#d1fae5" : "#fff1c2",
-                      border: qzConnectionState === "connected" ? "1px solid #86efac" : "1px solid #f6cc5e",
-                      borderRadius: 999,
-                      padding: "2px 8px",
-                    }}
-                  >
-                    {qzConnectionState === "connected" ? "QZ conectado nesta janela" : "QZ desconectado nesta janela"}
-                  </span>
-                  <div style={small}>A conexão do QZ vale apenas para a aba/janela atual do navegador.</div>
-                </div>
-                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-                  <input
-                    value={qzPrinterName}
-                    onChange={(e) => setQzPrinterName(e.target.value)}
-                    placeholder="Nome da impressora no QZ (opcional)"
-                    style={{ ...btn, minWidth: 280, padding: "6px 10px", fontWeight: 500 }}
-                  />
-                  <button style={{ ...btn, padding: "6px 10px" }} onClick={() => void connectQz()} disabled={qzBusy}>
-                    {qzBusy ? "Conectando..." : "Conectar QZ"}
-                  </button>
-                  <button style={{ ...btn, padding: "6px 10px" }} onClick={() => void printStyledTestViaQz()} disabled={qzBusy}>
-                    Teste avançado
-                  </button>
-                </div>
-                <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
-                  <label style={{ display: "inline-flex", alignItems: "center", gap: 6, ...small }}>
-                    Layout
-                    <select
-                      value={qzActiveLayoutId}
-                      onChange={(e) => setQzActiveLayoutId(e.target.value)}
-                      style={{ ...btn, padding: "6px 10px", fontWeight: 500, minWidth: 220 }}
-                    >
-                      {qzLayoutOptions.map((layout) => (
-                        <option key={layout.id} value={layout.id}>
-                          {layout.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <Link href="/admin/impressao" style={{ ...btn, textDecoration: "none", display: "inline-flex", alignItems: "center" }}>
-                    Editar layouts
-                  </Link>
-                </div>
-                <div style={small}>Impressão direta ESC/POS com encoding ISO-8859-1.</div>
-                {qzError ? <div style={{ ...small, color: "#b00020" }}>{qzError}</div> : null}
-              </div>
-            )}
-          </div>
+          <SettingsTab
+            settings={settings}
+            setSettings={setSettings}
+            settingsTab={settingsTab}
+            setSettingsTab={setSettingsTab}
+            ingredients={ingredients}
+            drinks={drinks}
+            setIngredients={setIngredients}
+            setDrinks={setDrinks}
+            setActiveDrinkId={setActiveDrinkId}
+            setActiveIngredientId={setActiveIngredientId}
+            setTab={setTab}
+            csvInputRef={csvInputRef}
+            onExportCsv={() => exportAsCsv({ ingredients, drinks, settings })}
+            onTriggerCsvImport={triggerCsvImport}
+            onImportCsvFile={importFromCsvFile}
+            qzConnectionState={qzConnectionState}
+            qzPrinterName={qzPrinterName}
+            setQzPrinterName={setQzPrinterName}
+            qzBusy={qzBusy}
+            qzError={qzError}
+            onConnectQz={connectQz}
+            onPrintTest={printStyledTestViaQz}
+          />
         )}
 
         {/* -------------------- DRINKS -------------------- */}
         {tab === "drinks" && (
-          <div style={card}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-              <h2 style={{ marginTop: 0, fontSize: FONT_SCALE.lg, marginBottom: 10 }}>Drinks</h2>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div style={small}>{drinks.length} drink(s)</div>
-                <button style={btn} onClick={addDrink}>+ Drink</button>
-              </div>
-            </div>
-
-            {drinks.length === 0 ? (
-              <div style={{ padding: 14, border: "1px dashed var(--border)", borderRadius: 14, color: "var(--muted)" }}>
-                Sem drinks. Clique em “+ Drink”.
-              </div>
-            ) : (
-              <>
-                <ScrollShadow axis="x" style={{ display: "flex", gap: 8, paddingBottom: 6, marginBottom: 10 }}>
-                  {drinks.map((d) => (
-                    <div key={d.id} style={pillStyle(d.id === activeDrinkId)} onClick={() => setActiveDrinkId(d.id)}>
-                      {d.name || "Sem nome"}
-                    </div>
-                  ))}
-                </ScrollShadow>
-
-                {activeDrink && (
-                  <div style={{ background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: 16, padding: 12 }}>
-                    <input
-                      style={input}
-                      value={activeDrink.name}
-                      onChange={(e) => updateDrink(activeDrink.id, { name: e.target.value })}
-                      placeholder="Nome do drink"
-                    />
-
-                    {/* Foto do drink */}
-<div style={{ marginTop: 10, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-  <div
-    style={{
-      width: 140,
-      height: 140,
-      borderRadius: 16,
-      border: "1px solid var(--border)",
-      background: "white",
-      overflow: "hidden",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      color: "var(--muted)",
-      fontSize: FONT_SCALE.sm,
-    }}
-  >
-    {activeDrink.photoDataUrl ? (
-      <img
-        src={activeDrink.photoDataUrl}
-        alt="Foto do drink"
-        style={{ width: "100%", height: "100%", objectFit: "cover" }}
-      />
-    ) : (
-      "Sem foto"
-    )}
-  </div>
-
-  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-    <label style={{ ...btn, display: "inline-block", cursor: "pointer" }}>
-      Inserir foto
-      <input
-        type="file"
-        accept="image/*"
-        style={{ display: "none" }}
-        onChange={async (e) => {
-          const f = e.target.files?.[0];
-          if (!f) return;
-          try {
-            const photoDataUrl = await fileToDataUrlResized(f, {
-              maxWidth: 1200,
-              maxHeight: 1200,
-              quality: 0.82,
-            });
-            updateDrink(activeDrink.id, { photoDataUrl });
-          } catch {
-            // fallback para manter upload funcional mesmo se a compressão falhar
-            const reader = new FileReader();
-            reader.onload = () => {
-              updateDrink(activeDrink.id, {
-                photoDataUrl: reader.result as string,
-              });
-            };
-            reader.readAsDataURL(f);
-          }
-        }}
-      />
-    </label>
-
-    <button
-      style={btnDanger}
-      disabled={!activeDrink.photoDataUrl}
-      onClick={() => {
-        if (!activeDrink.photoDataUrl) return;
-        if (!confirm("Remover a foto deste drink?")) return;
-        updateDrink(activeDrink.id, { photoDataUrl: undefined });
-      }}
-    >
-      Remover foto
-    </button>
-  </div>
-</div>
-
-                    {/* KPIs */}
-                    {(() => {
-                      const c = computedByDrinkId.get(activeDrink.id);
-                      if (!c) return null;
-
-                      const cost = c.cost;
-                      const markupP = applyPsychRounding(c.priceMarkup, settings.roundingMode);
-                      const cmvP = applyPsychRounding(c.priceCmv, settings.roundingMode);
-
-                      const blocks: React.ReactNode[] = [
-                        <div key="cost" style={{ border: "1px solid var(--border)", borderRadius: 14, padding: 12, background: "white" }}>
-                          <div style={small}>Custo</div>
-                          <div style={{ fontSize: FONT_SCALE.lg }}>{formatBRL(cost)}</div>
-                        </div>,
-                        <div key="m" style={{ border: "1px solid var(--border)", borderRadius: 14, padding: 12, background: "white" }}>
-                          <div style={small}>Preço (markup {settings.markup}x) • {settings.roundingMode === "none" ? "sem arred." : "arred."}</div>
-                          <div style={{ fontSize: FONT_SCALE.lg }}>{formatBRL(markupP)}</div>
-                        </div>,
-                        <div key="c" style={{ border: "1px solid var(--border)", borderRadius: 14, padding: 12, background: "white" }}>
-                          <div style={small}>Preço (CMV {Math.round(settings.targetCmv * 100)}%) • {settings.roundingMode === "none" ? "sem arred." : "arred."}</div>
-                          <div style={{ fontSize: FONT_SCALE.lg }}>{formatBRL(cmvP)}</div>
-                        </div>,
-                      ];
-
-                      return (
-                        <div className="kpi-grid" style={{ display: "grid", gridTemplateColumns: `repeat(${blocks.length}, minmax(0, 1fr))`, gap: 10, marginTop: 10 }}>
-                          {blocks}
-                        </div>
-                      );
-                    })()}
-
-                    <hr style={{ border: 0, borderTop: "1px solid var(--border)", margin: "12px 0" }} />
-
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                      <strong style={{ fontSize: FONT_SCALE.md }}>Receita</strong>
-                      <div style={{ display: "flex", gap: 8 }}>
-                        <button style={btn} onClick={() => addItemToDrink(activeDrink.id)} disabled={!ingredients.length}>+ Item</button>
-                        <button
-                          style={iconBtn}
-                          onClick={() => duplicateDrink(activeDrink.id)}
-                          aria-label="Duplicar drink"
-                          title="Duplicar drink"
-                        >
-                          <span className="material-symbols-rounded" aria-hidden>content_copy</span>
-                        </button>
-                        <button
-                          style={iconBtnDanger}
-                          onClick={() => {
-                            const shouldRemove = confirm(`Remover o drink "${activeDrink.name || "Sem nome"}"?`);
-                            if (!shouldRemove) return;
-                            removeDrink(activeDrink.id);
-                          }}
-                          aria-label="Remover drink"
-                          title="Remover drink"
-                        >
-                          <span className="material-symbols-rounded" aria-hidden>delete</span>
-                        </button>
-                      </div>
-                    </div>
-
-                    {activeDrink.items.length === 0 ? (
-                      <div style={{ marginTop: 10, padding: 14, border: "1px dashed var(--border)", borderRadius: 14, color: "var(--muted)" }}>
-                        Sem itens. Clique em “+ Item”.
-                      </div>
-                    ) : (
-                      <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
-                        {activeDrink.items.map((it, idx) => {
-                          const ing = ingredientMap.get(it.ingredientId);
-                          const cpm = ing ? computeCostPerMl(ing) : null;
-                          const perUnit = ing?.pricingModel === "by_unit" ? (ing.costPerUnit ?? 0) : 0;
-                          const categoryLabel = ing ? INGREDIENT_CATEGORY_LABEL[ing.category] : "Sem categoria";
-                          const unitHint = it.unit === "un" ? `${formatBRL(perUnit)} / un` : `${formatBRL(cpm ?? 0)} / ml`;
-                          const hint = `${categoryLabel} • ${unitHint}`;
-
-                          return (
-                            <div className="recipe-item-row" key={`${activeDrink.id}_${idx}`} style={{ display: "grid", gridTemplateColumns: "2fr 0.8fr 0.9fr 1fr 0.8fr", gap: 8, alignItems: "center" }}>
-                              <select style={input} value={it.ingredientId} onChange={(e) => updateItem(activeDrink.id, idx, { ingredientId: e.target.value })}>
-                                {ingredientGroups.map((group) => (
-                                  <optgroup key={group.category} label={INGREDIENT_CATEGORY_LABEL[group.category]}>
-                                    {group.items.map((i) => (
-                                      <option key={i.id} value={i.id}>
-                                        {i.name} ({INGREDIENT_CATEGORY_LABEL[i.category]})
-                                      </option>
-                                    ))}
-                                  </optgroup>
-                                ))}
-                              </select>
-
-                              <NumberField
-                                style={input}
-                                value={it.qty}
-                                decimals={it.unit === "ml" ? 0 : 2} // ml inteiro; dash/gota podem ser fracionários em quantidade
-                                min={0}
-                                onCommit={(n) => updateItem(activeDrink.id, idx, { qty: n })}
-                              />
-
-                              <select style={input} value={it.unit} onChange={(e) => updateItem(activeDrink.id, idx, { unit: e.target.value as RecipeUnit })}>
-                                <option value="ml">ml</option>
-                                <option value="dash">dash</option>
-                                <option value="drop">gota</option>
-                                <option value="un">un</option>
-                              </select>
-
-                              <div style={small}>{hint}</div>
-
-                              <button style={btnDanger} onClick={() => removeItem(activeDrink.id, idx)}>Remover</button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    <div style={{ marginTop: 10 }}>
-                      <textarea
-                        style={{ ...input, minHeight: 70 }}
-                        value={activeDrink.notes ?? ""}
-                        placeholder="Notas (opcional)"
-                        onChange={(e) => updateDrink(activeDrink.id, { notes: e.target.value })}
-                      />
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
+          <DrinksTab
+            drinks={drinks}
+            ingredients={ingredients}
+            activeDrinkId={activeDrinkId}
+            activeDrink={activeDrink}
+            setActiveDrinkId={setActiveDrinkId}
+            computedByDrinkId={computedByDrinkId}
+            ingredientMap={ingredientMap}
+            ingredientGroups={ingredientGroups}
+            settings={settings}
+            onAddDrink={addDrink}
+            onUpdateDrink={updateDrink}
+            onRemoveDrink={removeDrink}
+            onDuplicateDrink={duplicateDrink}
+            onAddItemToDrink={addItemToDrink}
+            onUpdateItem={updateItem}
+            onRemoveItem={removeItem}
+            onUploadPhoto={async (drinkId, file) => {
+              try {
+                const photoDataUrl = await fileToDataUrlResized(file, { maxWidth: 1200, maxHeight: 1200, quality: 0.82 });
+                updateDrink(drinkId, { photoDataUrl });
+              } catch {
+                const reader = new FileReader();
+                reader.onload = () => { updateDrink(drinkId, { photoDataUrl: reader.result as string }); };
+                reader.readAsDataURL(file);
+              }
+            }}
+          />
         )}
 
         {/* -------------------- INGREDIENTS -------------------- */}
         {tab === "ingredients" && (
-          <div style={card}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-              <h2 style={{ marginTop: 0, fontSize: FONT_SCALE.lg, marginBottom: 10 }}>Ingredientes</h2>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div style={small}>{ingredients.length} ingrediente(s)</div>
-              </div>
-            </div>
-
-            <ScrollShadow axis="x" style={{ display: "flex", gap: 8, paddingBottom: 6, marginBottom: 10 }}>
-              {INGREDIENT_CATEGORIES.map((category) => {
-                const count = ingredients.filter((i) => i.category === category).length;
-                return (
-                  <div
-                    key={category}
-                    style={categoryButtonStyle(category === ingredientCategoryTab)}
-                    onClick={() => setIngredientCategoryTab(category)}
-                  >
-                    {INGREDIENT_CATEGORY_LABEL[category]} ({count})
-                  </div>
-                );
-              })}
-            </ScrollShadow>
-
-            {ingredients.length === 0 ? (
-              <div style={{ padding: 14, border: "1px dashed var(--border)", borderRadius: 14, color: "var(--muted)" }}>
-                Sem ingredientes. Clique no “+” para criar.
-              </div>
-            ) : (
-              <>
-                <ScrollShadow axis="x" style={{ display: "flex", gap: 8, paddingBottom: 6, marginBottom: 10 }}>
-                  <div
-                    style={{ ...ingredientButtonStyle(false), display: "inline-flex", alignItems: "center", justifyContent: "center" }}
-                    onClick={addIngredient}
-                    aria-label="Adicionar ingrediente"
-                  >
-                    <span className="material-symbols-rounded" style={{ fontSize: 16 }} aria-hidden>add</span>
-                  </div>
-                  {activeCategoryIngredients.map((i) => (
-                    <div key={i.id} style={ingredientButtonStyle(i.id === activeIngredientId)} onClick={() => setActiveIngredientId(i.id)}>
-                      {i.name || "Sem nome"}
-                    </div>
-                  ))}
-                  {activeCategoryIngredients.length === 0 && (
-                    <div style={{ ...small, padding: "8px 2px" }}>
-                      Nenhum ingrediente nesta categoria.
-                    </div>
-                  )}
-                </ScrollShadow>
-
-                {activeIngredient && activeIngredient.category === ingredientCategoryTab && (
-                  <div style={{ background: "var(--panel2)", border: "1px solid var(--border)", borderRadius: 16, padding: 12 }}>
-                    <div className="ingredient-main-grid" style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 10 }}>
-                      <input
-                        style={input}
-                        value={activeIngredient.name}
-                        onChange={(e) => updateIngredient(activeIngredient.id, { name: e.target.value })}
-                        placeholder="Nome do ingrediente"
-                      />
-
-                      <select
-                        style={input}
-                        value={activeIngredient.category}
-                        onChange={(e) => {
-                          const nextCategory = e.target.value as IngredientCategory;
-                          setIngredientCategoryTab(nextCategory);
-                          updateIngredient(activeIngredient.id, { category: nextCategory });
-                        }}
-                      >
-                        {INGREDIENT_CATEGORIES.map((category) => (
-                          <option key={category} value={category}>{INGREDIENT_CATEGORY_LABEL[category]}</option>
-                        ))}
-                      </select>
-
-                      <select
-                        style={input}
-                        value={activeIngredient.pricingModel}
-                        onChange={(e) => updateIngredient(activeIngredient.id, { pricingModel: e.target.value as PricingModel })}
-                      >
-                        <option value="by_bottle">Por garrafa (R$ + ml + yield)</option>
-                        <option value="by_ml">Direto R$/ml</option>
-                        <option value="by_unit">Por unidade</option>
-                      </select>
-                    </div>
-
-                    {activeIngredient.pricingModel === "by_bottle" && (
-                      <div className="ingredient-bottle-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10, marginTop: 10 }}>
-                        <div>
-                          <div style={small}>Preço (R$)</div>
-                          <NumberField
-                            style={input}
-                            value={activeIngredient.bottlePrice ?? 0}
-                            decimals={2}
-                            min={0}
-                            onCommit={(n) => updateIngredient(activeIngredient.id, { bottlePrice: n })}
-                          />
-                        </div>
-
-                        <div>
-                          <div style={small}>ml nominal</div>
-                          <NumberField
-                            style={input}
-                            value={activeIngredient.bottleMl ?? 0}
-                            decimals={0}
-                            min={0}
-                            inputMode="numeric"
-                            onCommit={(n) => updateIngredient(activeIngredient.id, { bottleMl: n })}
-                          />
-                        </div>
-
-                        <div>
-                          <div style={small}>yield real (ml)</div>
-                          <NumberField
-                            style={input}
-                            value={activeIngredient.yieldMl ?? (activeIngredient.bottleMl ?? 0)}
-                            decimals={0}
-                            min={0}
-                            inputMode="numeric"
-                            onCommit={(n) => updateIngredient(activeIngredient.id, { yieldMl: n })}
-                          />
-                        </div>
-
-                        <div>
-                          <div style={small}>perdas (%)</div>
-                          <NumberField
-                            style={input}
-                            value={activeIngredient.lossPct ?? 0}
-                            decimals={0}
-                            min={0}
-                            max={100}
-                            inputMode="numeric"
-                            onCommit={(n) => updateIngredient(activeIngredient.id, { lossPct: n })}
-                          />
-                        </div>
-
-                        <div style={{ gridColumn: "1 / -1", background: "white", border: "1px solid var(--border)", borderRadius: 14, padding: 12 }}>
-                          <div style={small}>R$/ml calculado</div>
-                          <div style={{ fontSize: FONT_SCALE.md }}>{formatBRL(computeCostPerMl(activeIngredient) ?? 0)} / ml</div>
-                        </div>
-                      </div>
-                    )}
-
-                    {activeIngredient.pricingModel === "by_ml" && (
-                      <div className="ingredient-two-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
-                        <div>
-                          <div style={small}>R$/ml</div>
-                          <NumberField
-                            style={input}
-                            value={activeIngredient.costPerMl ?? 0}
-                            decimals={2}
-                            min={0}
-                            onCommit={(n) => updateIngredient(activeIngredient.id, { costPerMl: n })}
-                          />
-                        </div>
-                        <div style={{ display: "flex", alignItems: "flex-end" }}>
-                          <div style={{ fontSize: FONT_SCALE.md }}>{formatBRL(computeCostPerMl(activeIngredient) ?? 0)} / ml</div>
-                        </div>
-                      </div>
-                    )}
-
-                    {activeIngredient.pricingModel === "by_unit" && (
-                      <div className="ingredient-two-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
-                        <div>
-                          <div style={small}>R$ por unidade</div>
-                          <NumberField
-                            style={input}
-                            value={activeIngredient.costPerUnit ?? 0}
-                            decimals={2}
-                            min={0}
-                            onCommit={(n) => updateIngredient(activeIngredient.id, { costPerUnit: n })}
-                          />
-                        </div>
-                      </div>
-                    )}
-
-                    <div style={{ marginTop: 10 }}>
-                      <textarea
-                        style={{ ...input, minHeight: 70 }}
-                        value={activeIngredient.notes ?? ""}
-                        placeholder="Notas (opcional)"
-                        onChange={(e) => updateIngredient(activeIngredient.id, { notes: e.target.value })}
-                      />
-                    </div>
-
-                    <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
-                      <button
-                        style={iconBtn}
-                        onClick={() => duplicateIngredient(activeIngredient.id)}
-                        aria-label="Duplicar ingrediente"
-                        title="Duplicar ingrediente"
-                      >
-                        <span className="material-symbols-rounded" aria-hidden>content_copy</span>
-                      </button>
-                      <button
-                        style={iconBtnDanger}
-                        onClick={() => {
-                          const shouldRemove = confirm(`Remover o ingrediente "${activeIngredient.name || "Sem nome"}"?`);
-                          if (!shouldRemove) return;
-                          removeIngredient(activeIngredient.id);
-                        }}
-                        aria-label="Remover ingrediente"
-                        title="Remover ingrediente"
-                      >
-                        <span className="material-symbols-rounded" aria-hidden>delete</span>
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
+          <IngredientsTab
+            ingredients={ingredients}
+            activeIngredientId={activeIngredientId}
+            activeIngredient={activeIngredient}
+            activeCategoryIngredients={activeCategoryIngredients}
+            ingredientCategoryTab={ingredientCategoryTab}
+            setIngredientCategoryTab={setIngredientCategoryTab}
+            setActiveIngredientId={setActiveIngredientId}
+            onAddIngredient={addIngredient}
+            onUpdateIngredient={updateIngredient}
+            onDuplicateIngredient={duplicateIngredient}
+            onRemoveIngredient={removeIngredient}
+          />
         )}
       </div>
     </div>
