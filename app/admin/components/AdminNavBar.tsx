@@ -22,7 +22,7 @@ export function AdminNavBar() {
 
   const handleLogout = async () => {
     const supabase = getSupabaseBrowserClient();
-    await supabase.auth.signOut();
+    await supabase?.auth.signOut();
     router.push("/admin/login");
   };
 
