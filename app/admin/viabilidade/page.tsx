@@ -38,6 +38,24 @@ const DEFAULT_PARAMS: Params = {
   consumoValor: 0,
 };
 
+const PARAMS_STORAGE_KEY = "viabilidade_params_v1";
+
+function loadParams(): Params {
+  try {
+    const raw = localStorage.getItem(PARAMS_STORAGE_KEY);
+    if (!raw) return DEFAULT_PARAMS;
+    return { ...DEFAULT_PARAMS, ...JSON.parse(raw) };
+  } catch {
+    return DEFAULT_PARAMS;
+  }
+}
+
+function saveParams(p: Params) {
+  try {
+    localStorage.setItem(PARAMS_STORAGE_KEY, JSON.stringify(p));
+  } catch {}
+}
+
 /* ------------------------------------------------------------------ */
 /* Helpers de formatação                                                */
 /* ------------------------------------------------------------------ */
@@ -84,8 +102,14 @@ export default function ViabilidadePage() {
         }
       }
       setLoading(false);
+      setParams(loadParams());
     })();
   }, []);
+
+  /* Persiste params no localStorage a cada mudança */
+  useEffect(() => {
+    saveParams(params);
+  }, [params]);
 
   /* Drinks do cardápio público com custo e preço calculados */
   const drinkRows = useMemo(() => {
