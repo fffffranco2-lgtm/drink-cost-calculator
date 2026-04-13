@@ -11,6 +11,7 @@ const NAV_LINKS: Array<{ href: string; label: string }> = [
   { href: "/admin/pedidos", label: "Pedidos" },
   { href: "/admin/mesas", label: "Mesas" },
   { href: "/admin/impressao", label: "Impressão" },
+  { href: "/admin/viabilidade", label: "Viabilidade" },
 ];
 
 export function AdminNavBar() {
