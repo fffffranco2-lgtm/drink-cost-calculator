@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import {
   applyPsychRounding,
@@ -38,23 +38,7 @@ const DEFAULT_PARAMS: Params = {
   consumoValor: 0,
 };
 
-const PARAMS_STORAGE_KEY = "viabilidade_params_v1";
-
-function loadParams(): Params {
-  try {
-    const raw = localStorage.getItem(PARAMS_STORAGE_KEY);
-    if (!raw) return DEFAULT_PARAMS;
-    return { ...DEFAULT_PARAMS, ...JSON.parse(raw) };
-  } catch {
-    return DEFAULT_PARAMS;
-  }
-}
-
-function saveParams(p: Params) {
-  try {
-    localStorage.setItem(PARAMS_STORAGE_KEY, JSON.stringify(p));
-  } catch {}
-}
+const SAVE_DEBOUNCE_MS = 1500;
 
 /* ------------------------------------------------------------------ */
 /* Helpers de formatação                                                */
@@ -79,6 +63,11 @@ export default function ViabilidadePage() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [params, setParams] = useState<Params>(DEFAULT_PARAMS);
 
+  // Guarda o estado remoto completo para merge no save (evita sobrescrever drinks/ingredientes)
+  const remoteStateRef = useRef<Record<string, unknown>>({});
+  const userIdRef = useRef<string | null>(null);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   /* Busca dados do Supabase */
   useEffect(() => {
     (async () => {
@@ -86,6 +75,7 @@ export default function ViabilidadePage() {
       if (!supabase) { setLoading(false); return; }
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { setLoading(false); return; }
+      userIdRef.current = user.id;
 
       const { data } = await supabase
         .from("app_state")
@@ -95,20 +85,35 @@ export default function ViabilidadePage() {
 
       if (data?.state) {
         const s = data.state as Record<string, unknown>;
+        remoteStateRef.current = s;
         setIngredients(normalizeIngredients(s.ingredients));
         setDrinks(Array.isArray(s.drinks) ? s.drinks.map(normalizeDrink) : []);
         if (s.settings && typeof s.settings === "object") {
           setSettings({ ...DEFAULT_SETTINGS, ...(s.settings as Partial<Settings>) });
         }
+        if (s.viabilidadeParams && typeof s.viabilidadeParams === "object") {
+          setParams({ ...DEFAULT_PARAMS, ...(s.viabilidadeParams as Partial<Params>) });
+        }
       }
       setLoading(false);
-      setParams(loadParams());
     })();
   }, []);
 
-  /* Persiste params no localStorage a cada mudança */
+  /* Persiste params no Supabase com debounce */
   useEffect(() => {
-    saveParams(params);
+    if (!userIdRef.current) return;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(async () => {
+      const supabase = getSupabaseBrowserClient();
+      if (!supabase || !userIdRef.current) return;
+      const newState = { ...remoteStateRef.current, viabilidadeParams: params };
+      await supabase.from("app_state").upsert({
+        user_id: userIdRef.current,
+        state: newState,
+        updated_at: new Date().toISOString(),
+      });
+      remoteStateRef.current = newState;
+    }, SAVE_DEBOUNCE_MS);
   }, [params]);
 
   /* Drinks do cardápio público com custo e preço calculados */
