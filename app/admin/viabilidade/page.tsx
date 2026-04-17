@@ -75,12 +75,12 @@ export default function ViabilidadePage() {
       if (!supabase) { setLoading(false); return; }
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { setLoading(false); return; }
-      userIdRef.current = user.id;
+      userIdRef.current = "shared";
 
       const { data } = await supabase
         .from("app_state")
         .select("state")
-        .eq("user_id", user.id)
+        .eq("user_id", "shared")
         .maybeSingle();
 
       if (data?.state) {

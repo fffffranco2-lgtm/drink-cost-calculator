@@ -276,7 +276,7 @@ export default function Page() {
   const [drinks, setDrinks] = useState<Drink[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [hydratingRemote, setHydratingRemote] = useState(true);
-  const [adminUserId, setAdminUserId] = useState<string | null>(null);
+  const [authed, setAuthed] = useState(false);
   const [remoteError, setRemoteError] = useState<string>("");
 
   const [tab, setTab] = useState<"receitas" | "drinks" | "ingredients" | "settings">("receitas");
@@ -343,9 +343,9 @@ export default function Page() {
         return;
       }
 
-      setAdminUserId(user.id);
+      setAuthed(true);
 
-      const { data, error } = await supabase.from("app_state").select("state").eq("user_id", user.id).maybeSingle();
+      const { data, error } = await supabase.from("app_state").select("state").eq("user_id", "shared").maybeSingle();
       if (!active) return;
 
       if (error) {
@@ -400,13 +400,13 @@ export default function Page() {
   }, [hydratingRemote]);
 
   useEffect(() => {
-    if (hydratingRemote || !adminUserId || !supabase) return;
+    if (hydratingRemote || !authed || !supabase) return;
     if (lastRemoteStateRef.current === remoteStateJson) return;
 
     const timeout = setTimeout(async () => {
       const { error } = await supabase
         .from("app_state")
-        .upsert({ user_id: adminUserId, state: remoteState, updated_at: new Date().toISOString() });
+        .upsert({ user_id: "shared", state: remoteState, updated_at: new Date().toISOString() });
 
       if (error) {
         setRemoteError("Falha ao salvar alterações no Supabase.");
@@ -418,7 +418,7 @@ export default function Page() {
     return () => clearTimeout(timeout);
   }, [
     hydratingRemote,
-    adminUserId,
+    authed,
     remoteState,
     remoteStateJson,
     supabase,
