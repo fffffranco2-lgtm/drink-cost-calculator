@@ -107,10 +107,10 @@ export default function ViabilidadePage() {
       const supabase = getSupabaseBrowserClient();
       if (!supabase || !userIdRef.current) return;
       const newState = { ...remoteStateRef.current, viabilidadeParams: params };
+      // Não inclui updated_at para não invalidar o token de CAS da página admin.
       await supabase.from("app_state").upsert({
         user_id: userIdRef.current,
         state: newState,
-        updated_at: new Date().toISOString(),
       });
       remoteStateRef.current = newState;
     }, SAVE_DEBOUNCE_MS);

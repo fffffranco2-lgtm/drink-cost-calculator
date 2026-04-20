@@ -85,6 +85,7 @@ export default function Page() {
    *  É o token usado no optimistic concurrency check. */
   const lastServerUpdatedAtRef = useRef<string | null>(null);
   const lastRemoteStateRef = useRef<string>("");
+  const isSavingRef = useRef(false);
   const lastLocalStateRef = useRef<string>("");
 
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
@@ -93,6 +94,7 @@ export default function Page() {
   const [hydratingRemote, setHydratingRemote] = useState(true);
   const [authed, setAuthed] = useState(false);
   const [remoteError, setRemoteError] = useState<string>("");
+  const [saveRetryTrigger, setSaveRetryTrigger] = useState(0);
 
   const [tab, setTab] = useState<"receitas" | "drinks" | "ingredients" | "settings">("receitas");
   const [activeDrinkId, setActiveDrinkId] = useState<string | null>(null);
@@ -225,8 +227,12 @@ export default function Page() {
   useEffect(() => {
     if (hydratingRemote || !authed || !supabase) return;
     if (lastRemoteStateRef.current === remoteStateJson) return;
+    // Se já há um save em voo, espera ele terminar — o finally vai disparar saveRetryTrigger.
+    if (isSavingRef.current) return;
 
     const timeout = setTimeout(async () => {
+      if (isSavingRef.current) return;
+      isSavingRef.current = true;
       try {
         const record = await saveAppState(
           supabase,
@@ -239,21 +245,24 @@ export default function Page() {
       } catch (error) {
         if (error instanceof AppStateConflictError) {
           if (error.serverRecord) {
-            applyServerRecord(error.serverRecord);
-            setRemoteError(
-              "Outro admin salvou antes. Recarregamos os dados mais recentes — revise suas alterações."
-            );
+            // Atualiza o token com o valor atual do servidor e retenta —
+            // não reverte o estado local para não perder alterações do usuário.
+            lastServerUpdatedAtRef.current = error.serverRecord.updatedAt;
           } else {
             setRemoteError("Conflito de edição: recarregue a página.");
           }
         } else {
           setRemoteError("Falha ao salvar alterações no Supabase.");
         }
+      } finally {
+        isSavingRef.current = false;
+        // Acorda o effect para salvar estado pendente (se houver).
+        setSaveRetryTrigger((t) => t + 1);
       }
     }, REMOTE_SAVE_DEBOUNCE_MS);
 
     return () => clearTimeout(timeout);
-  }, [hydratingRemote, authed, remoteState, remoteStateJson, supabase, applyServerRecord]);
+  }, [hydratingRemote, authed, remoteState, remoteStateJson, supabase, saveRetryTrigger]);
 
   /* ---------------------- save local ---------------------- */
   useEffect(() => {
