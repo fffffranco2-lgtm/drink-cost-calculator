@@ -62,6 +62,9 @@ export default function ViabilidadePage() {
   const [ingredients, setIngredients] = useState<Ingredient[]>([]);
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [params, setParams] = useState<Params>(DEFAULT_PARAMS);
+  const [drinkSearch, setDrinkSearch] = useState("");
+  const [sortKey, setSortKey] = useState<"name" | "price" | "cost" | "margin">("margin");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   // Guarda o estado remoto completo para merge no save (evita sobrescrever drinks/ingredientes)
   const remoteStateRef = useRef<Record<string, unknown>>({});
@@ -121,17 +124,33 @@ export default function ViabilidadePage() {
     const publicDrinks = drinks.filter((d) => d.showOnPublicMenu);
     return publicDrinks.map((d) => {
       const cost = computeDrinkCost(d, ingredients, settings);
+      const mode = d.pricingMode ?? "markup";
       let price: number;
-      if (d.publicMenuPriceMode === "manual") {
+      if (mode === "manual") {
         price = d.manualPublicPrice ?? 0;
-      } else if (d.publicMenuPriceMode === "cmv") {
-        price = applyPsychRounding(cost / settings.targetCmv, settings.roundingMode);
+      } else if (mode === "cmv") {
+        const cmv = d.cmvTarget ?? settings.targetCmv;
+        price = applyPsychRounding(cmv > 0 ? cost / cmv : 0, settings.roundingMode);
       } else {
-        price = applyPsychRounding(cost * settings.markup, settings.roundingMode);
+        price = applyPsychRounding(cost * (d.markupMultiplier ?? settings.markup), settings.roundingMode);
       }
       return { id: d.id, name: d.name, cost, price };
     });
   }, [drinks, ingredients, settings]);
+
+  /* Rows filtradas e ordenadas para exibição (não afeta os cálculos financeiros) */
+  const displayRows = useMemo(() => {
+    const q = drinkSearch.trim().toLowerCase();
+    const filtered = q ? drinkRows.filter((d) => d.name.toLowerCase().includes(q)) : drinkRows;
+    return [...filtered].sort((a, b) => {
+      let diff: number;
+      if (sortKey === "name") diff = a.name.localeCompare(b.name, "pt-BR");
+      else if (sortKey === "price") diff = a.price - b.price;
+      else if (sortKey === "cost") diff = a.cost - b.cost;
+      else diff = (a.price - a.cost) - (b.price - b.cost);
+      return sortDir === "asc" ? diff : -diff;
+    });
+  }, [drinkRows, drinkSearch, sortKey, sortDir]);
 
   /* Cálculos financeiros */
   const calc = useMemo(() => {
@@ -361,6 +380,58 @@ export default function ViabilidadePage() {
         <div style={{ marginBottom: 24 }}>
           <div style={labelStyle}>Drinks do cardápio público</div>
           <div style={card}>
+            {/* Barra de busca + ordenação */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+              <input
+                type="text"
+                placeholder="Buscar drink…"
+                value={drinkSearch}
+                onChange={(e) => setDrinkSearch(e.target.value)}
+                style={{
+                  flex: "1 1 140px",
+                  border: "1px solid var(--border)",
+                  borderRadius: 8,
+                  padding: "5px 10px",
+                  fontSize: 13,
+                  background: "var(--panel2)",
+                  color: "var(--ink)",
+                  fontFamily: "inherit",
+                  minWidth: 0,
+                }}
+              />
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                {(["margin", "price", "cost", "name"] as const).map((key) => {
+                  const labels = { margin: "Margem", price: "Preço", cost: "Custo", name: "Nome" };
+                  const active = sortKey === key;
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => {
+                        if (active) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+                        else { setSortKey(key); setSortDir(key === "name" ? "asc" : "desc"); }
+                      }}
+                      style={{
+                        border: "1px solid var(--border)",
+                        borderRadius: 6,
+                        padding: "4px 10px",
+                        fontSize: 12,
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                        background: active ? "var(--accent, #0070f3)" : "var(--panel2)",
+                        color: active ? "#fff" : "var(--muted)",
+                        fontWeight: active ? 600 : 400,
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 3,
+                      }}
+                    >
+                      {labels[key]}
+                      {active && <span style={{ fontSize: 10 }}>{sortDir === "desc" ? "↓" : "↑"}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
             <div style={{ overflowX: "auto" }}>
               <table style={{ width: "100%", borderCollapse: "collapse", tableLayout: "fixed" }}>
                 <colgroup>
@@ -380,7 +451,7 @@ export default function ViabilidadePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {drinkRows.map((d) => {
+                  {displayRows.map((d) => {
                     const margin = d.price - d.cost;
                     const barPct = Math.round((margin / maxMargin) * 100);
                     return (
@@ -411,10 +482,10 @@ export default function ViabilidadePage() {
                       </tr>
                     );
                   })}
-                  {drinkRows.length === 0 && (
+                  {displayRows.length === 0 && (
                     <tr>
                       <td colSpan={5} style={{ ...tdStyle, color: "var(--muted)", textAlign: "center", padding: "20px 10px" }}>
-                        Nenhum drink no cardápio público
+                        {drinkRows.length === 0 ? "Nenhum drink no cardápio público" : "Nenhum drink encontrado"}
                       </td>
                     </tr>
                   )}
