@@ -69,15 +69,22 @@ export type RecipeItem = {
   unit: RecipeUnit;
 };
 
+export type DrinksPanelMode = "editor" | "pricing";
+
 export type Drink = {
   id: string;
   name: string;
   items: RecipeItem[];
   notes?: string;
+  preparationNotes?: string;
   photoDataUrl?: string; // base64 (data URL) da foto
   showOnPublicMenu?: boolean;
   publicMenuPriceMode?: PublicMenuDrinkPriceMode;
   manualPublicPrice?: number;
+  // precificação interna por drink
+  pricingMode?: PublicMenuDrinkPriceMode;
+  markupMultiplier?: number;
+  cmvTarget?: number;
 };
 
 export type Settings = {
@@ -99,6 +106,7 @@ export type AppStatePayload = {
   activeIngredientId: string | null;
   tab: "carta" | "receitas" | "drinks" | "ingredients" | "settings" | "orders";
   cartaViewMode: CartaViewMode;
+  drinksMode?: DrinksPanelMode;
 };
 
 export type ExportPayload = {

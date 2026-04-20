@@ -1,19 +1,64 @@
 @import "tailwindcss";
 
+/* =========================================================================
+   Manteca — design tokens unificados.
+
+   Antes: globals.css tinha um set (--background/--foreground/--accent) e
+   app/admin/page.tsx redefinia outro (--bg/--panel/--ink) inline. Aqui
+   consolidamos tudo numa única fonte de verdade, com aliases de
+   compatibilidade para o código legado do admin.
+   ========================================================================= */
+
 :root {
+  /* Superfícies */
   --background: #f6f2ea;
-  --foreground: #1d232a;
   --surface: #fffdf9;
-  --surface-alt: #fff4e6;
+  --surface-alt: #fff4e7;
+  --surface-pill: #f7ebdb;
+  --surface-pill-active: #eaf6f4;
+  --surface-btn: #f3e8d8;
+
+  /* Texto / linhas */
+  --foreground: #1d232a;
+  --muted: #5a6672;
   --line: #dccdb8;
+
+  /* Acento */
   --accent: #0f766e;
   --accent-strong: #115e59;
+  --accent-soft: #d5ebe7;
+  --focus: rgba(15, 118, 110, 0.28);
+
+  /* Feedback */
   --danger: #9b1c1c;
+  --danger-bg: #fff0f0;
+  --danger-border: #f2caca;
+  --terracota: #8e3e36;
+  --terracota-soft: #f4e0dd;
+  --green-positive: #065f46;
+
+  /* Sombra */
+  --shadow: 0 12px 30px rgba(32, 37, 42, 0.08);
+
+  /* ----- Aliases de compatibilidade (admin legado) ----- */
+  --bg: var(--background);
+  --panel: var(--surface);
+  --panel2: var(--surface-alt);
+  --pill: var(--surface-pill);
+  --pillActive: var(--surface-pill-active);
+  --ink: var(--foreground);
+  --border: var(--line);
+  --btn: var(--surface-btn);
+  --dangerBorder: var(--danger-border);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-accent: var(--accent);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
   --font-sans: var(--font-app-sans);
   --font-mono: var(--font-app-mono);
 }
@@ -56,6 +101,14 @@ textarea:focus-visible {
   outline-offset: 2px;
 }
 
+/* Foco em inputs do admin (antes duplicado inline via <style>{focusStyle}>) */
+input:focus,
+textarea:focus,
+select:focus {
+  box-shadow: 0 0 0 4px var(--focus);
+  border-color: #76b6ae;
+}
+
 .material-symbols-rounded {
   font-family: "Material Symbols Rounded";
   font-weight: normal;
@@ -75,4 +128,18 @@ textarea:focus-visible {
     "wght" 500,
     "GRAD" 0,
     "opsz" 20;
+}
+
+/* Media query colapsando grids do admin em coluna única em telas pequenas.
+   Antes era injetado via <style>{focusStyle}> em page.tsx. */
+@media (max-width: 900px) {
+  .settings-grid,
+  .ingredient-main-grid,
+  .ingredient-bottle-grid,
+  .ingredient-two-grid,
+  .recipe-list-grid,
+  .kpi-grid,
+  .recipe-item-row {
+    grid-template-columns: 1fr !important;
+  }
 }

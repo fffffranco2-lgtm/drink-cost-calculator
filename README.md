@@ -1,107 +1,57 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Refactor — Manteca (drink-cost-calculator)
 
-## Getting Started
+Este diretório contém os arquivos refatorados respondendo aos 4 pontos priorizados no diagnóstico. **Nada foi alterado no seu código original** — copie os arquivos manualmente para seu repositório quando estiver confortável.
 
-First, run the development server:
+## Mapa de cópia
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+| Arquivo refatorado | Destino no seu repo |
+|---|---|
+| `refactor/lib/admin-csv.ts` | `lib/admin-csv.ts` *(novo)* |
+| `refactor/lib/admin-seed.ts` | `lib/admin-seed.ts` *(novo)* |
+| `refactor/lib/qz-core.ts` | `lib/qz-core.ts` *(novo)* |
+| `refactor/lib/app-state-repo.ts` | `lib/app-state-repo.ts` *(novo)* |
+| `refactor/hooks/useQzConnection.ts` | `app/admin/hooks/useQzConnection.ts` *(substitui)* |
+| `refactor/hooks/useImpressaoQzConnection.ts` | `app/admin/impressao/hooks/useImpressaoQzConnection.ts` *(substitui)* |
+| `refactor/hooks/usePedidosQzConnection.ts` | `app/admin/pedidos/hooks/usePedidosQzConnection.ts` *(substitui)* |
+| `refactor/app/globals.css` | `app/globals.css` *(substitui)* |
+| `refactor/app/admin/internal-theme.ts` | `app/admin/internal-theme.ts` *(substitui)* |
+| `refactor/app/admin/page.tsx` | `app/admin/page.tsx` *(substitui)* |
+| `refactor/supabase/migrations/20260420_app_state_updated_at.sql` | `supabase/migrations/20260420_app_state_updated_at.sql` *(novo)* |
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Também existe `original/` com snapshot dos arquivos antes da mudança, para diff/rollback.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Ordem recomendada de aplicação
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### 1. CSS/tema (baixo risco)
+- Copie `app/globals.css` e `app/admin/internal-theme.ts`.
+- `page.tsx` novo já remove o `<style>{focusStyle}</style>` inline e a duplicação de `themeVars`.
+- Agora existe **uma única fonte de verdade**: variáveis definidas em `:root` no `globals.css`. Tokens antigos (`--bg`, `--panel`, `--ink`, etc.) viraram aliases das novas (`--background`, `--surface`, `--foreground`), então todos os usos antigos continuam funcionando.
 
-## Pedidos Por Origem (Mesa/Balcao)
+### 2. Unificação dos 3 hooks QZ
+- Copie `lib/qz-core.ts` com o core reutilizável: `loadQz`, `configureQzSecurity`, `resolvePrinter`, `ensureQzReady`, `useQzBase`, `useQzPrinterName`.
+- Substitua os 3 hooks antigos pelos novos (mesma API pública, implementação enxuta). `usePedidosQzConnection` foi de 213 linhas para 75, `useImpressaoQzConnection` de 119 para 33, `useQzConnection` de 312 para 108.
+- O singleton interno (`qzLoaderPromise` + `qzSecurityReady` em `qz-core.ts`) elimina 3 loaders paralelos que antes disputavam a criação do `<script>`.
 
-O sistema de pedidos agora suporta origem:
-- `mesa_qr`: pedido feito via URL de QR com `mesa` + `token`
-- `balcao`: pedido sem contexto de mesa valido
+### 3. Extração de CSV + seed
+- Copie `lib/admin-csv.ts` e `lib/admin-seed.ts`.
+- O novo `page.tsx` importa de lá em vez de ter tudo inline. Tipagem foi apertada: os `any` do parse viraram `Record<string, unknown>` e `RawDrinkRow/RawSettingsRow` explícitos.
+- O seed agora só roda depois de confirmar que **não há registro no servidor** (antes bastava o estado local estar vazio, o que podia criar duplicatas se a hidratação demorasse).
 
-### 1. Aplicar migration
+### 4. Concorrência no `app_state` (maior impacto)
+- Rode a migration: `npm run supabase:db:push` depois de copiar `20260420_app_state_updated_at.sql`.
+- Copie `lib/app-state-repo.ts`.
+- O novo `page.tsx` usa `loadAppState` / `saveAppState` com o token `updated_at`. Quando dois admins editam simultaneamente, quem chega depois recebe `AppStateConflictError` e o app **re-hidrata automaticamente** com o estado mais recente do servidor, mostrando um aviso ("Outro admin salvou antes. Recarregamos os dados mais recentes — revise suas alterações.").
+- Não há mais sobrescrita silenciosa.
 
-```bash
-npm run supabase:db:push
-```
+## O que ficou de fora (de propósito)
 
-Se pedir autenticacao da CLI, rode:
+- Não toquei em `DrinksTab`, `IngredientsTab`, `SettingsTab`, `ResumoTab` — eles continuam válidos.
+- Não renomeei os tokens dos CSS antigos (`--bg`, `--panel`). Deixei como aliases. Se quiser migrar o admin para os nomes canônicos (`--background`, `--surface`), faço num passe separado.
+- A rota `/admin/impressao` e `/admin/pedidos` ganham o QZ unificado de graça, sem mudanças no componente.
 
-```bash
-npm run supabase -- login
-```
+## Validação sugerida antes de commitar
 
-Ou exporte o token:
-
-```bash
-export SUPABASE_ACCESS_TOKEN=seu_token
-```
-
-### 2. Configurar assinatura dos QRs
-
-No ambiente da aplicacao, defina:
-
-```bash
-TABLE_QR_SIGNING_SECRET=uma_chave_forte_e_privada
-```
-
-### 3. Gerar URLs por mesa
-
-Gerar mesas `M01..M20` em CSV:
-
-```bash
-TABLE_QR_SIGNING_SECRET=... npm run tables:qr:urls -- --count 20 --base-url https://seu-dominio.com
-```
-
-Gerar mesas especificas:
-
-```bash
-TABLE_QR_SIGNING_SECRET=... npm run tables:qr:urls -- --tables M01,M05,M12 --base-url https://seu-dominio.com
-```
-
-Cada URL sai no formato:
-- `/cardapio?mesa=M12&token=...`
-
-## QZ Tray (assinatura confiável)
-
-Para evitar prompt de autorização em toda impressão no QZ Tray, configure:
-
-```bash
-QZ_CERT_PEM="-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
-QZ_PRIVATE_KEY_PEM="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
-```
-
-Alternativa (mais robusta em alguns painéis de deploy): usar base64 dos PEMs
-
-```bash
-QZ_CERT_PEM_BASE64="LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t..."
-QZ_PRIVATE_KEY_PEM_BASE64="LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0t..."
-```
-
-Observações:
-- `QZ_CERT_PEM` é o certificado público da assinatura QZ.
-- `QZ_PRIVATE_KEY_PEM` é a chave privada correspondente (nunca expor no frontend).
-- As variáveis `*_BASE64` são fallback das variáveis principais e podem ser usadas quando o provedor de deploy tiver problemas com multiline.
-- As rotas `/api/qz/certificate` e `/api/qz/sign` usam essas variáveis e exigem usuário admin autenticado.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. `npm run build` — garantir que o TS compila.
+2. Abrir duas abas em `/admin` e editar simultaneamente — a segunda deve recarregar automaticamente ao salvar.
+3. Conectar QZ Tray e imprimir de `/admin` (settings), `/admin/impressao` e `/admin/pedidos` — as 3 rotas agora compartilham a mesma conexão.
+4. Export/import CSV round-trip em `/admin/settings`.

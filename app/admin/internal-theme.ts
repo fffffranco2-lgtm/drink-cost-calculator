@@ -1,25 +1,24 @@
 import type React from "react";
 
+/**
+ * Tokens de tema do admin agora são apenas aliases que consomem as
+ * CSS variables definidas em globals.css. Nada mais é redeclarado aqui:
+ * isso elimina o conflito entre os dois sistemas de cor que existia
+ * quando `page.tsx` também escrevia `--bg`, `--panel`, etc.
+ *
+ * Os nomes `internal*` permanecem para preservar a API pública do módulo.
+ */
+
 type ThemeVars = React.CSSProperties & Record<`--${string}`, string>;
 
-export const internalThemeVars: ThemeVars = {
-  ["--bg"]: "#f6f2ea",
-  ["--panel"]: "#fffdf9",
-  ["--panel2"]: "#fff4e7",
-  ["--pill"]: "#f7ebdb",
-  ["--pillActive"]: "#eaf6f4",
-  ["--ink"]: "#1d232a",
-  ["--muted"]: "#5a6672",
-  ["--border"]: "#dccdb8",
-  ["--shadow"]: "0 12px 30px rgba(32, 37, 42, 0.08)",
-  ["--btn"]: "#f3e8d8",
-  ["--danger"]: "#fff0f0",
-  ["--dangerBorder"]: "#f2caca",
-  ["--focus"]: "rgba(15, 118, 110, 0.28)",
-};
+/**
+ * Mantido como objeto vazio tipado: o tema já está aplicado via :root em
+ * globals.css, mas alguns lugares ainda spread `internalThemeVars` no style
+ * inline. Deixá-lo vazio mantém esses call sites funcionando.
+ */
+export const internalThemeVars: ThemeVars = {};
 
 export const internalPageStyle: React.CSSProperties = {
-  ...internalThemeVars,
   backgroundColor: "var(--bg)",
   minHeight: "100vh",
   color: "var(--ink)",
@@ -61,8 +60,8 @@ export const internalButtonStyle: React.CSSProperties = {
 
 export const internalDangerButtonStyle: React.CSSProperties = {
   ...internalButtonStyle,
-  backgroundColor: "var(--danger)",
-  borderColor: "var(--dangerBorder)",
+  backgroundColor: "var(--danger-bg)",
+  borderColor: "var(--danger-border)",
 };
 
 export const internalInputStyle: React.CSSProperties = {
@@ -97,9 +96,9 @@ export function internalPillStyle(active: boolean): React.CSSProperties {
   };
 }
 
-export const internalFocusStyle = `
-  input:focus, textarea:focus, select:focus {
-    box-shadow: 0 0 0 4px var(--focus);
-    border-color: #76b6ae;
-  }
-`;
+/**
+ * Deprecated: foco agora está em globals.css. Mantido exportado para
+ * eventual callers ainda fazerem `<style>{internalFocusStyle}</style>`,
+ * mas não é mais necessário.
+ */
+export const internalFocusStyle = "";
