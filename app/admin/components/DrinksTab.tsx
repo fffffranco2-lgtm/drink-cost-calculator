@@ -611,7 +611,7 @@ function RecipeSection({
                 <NumberField
                   style={rowInput}
                   value={it.qty}
-                  decimals={it.unit === "ml" ? 0 : 2}
+                  decimals={it.unit === "ml" ? 0 : it.unit === "g" ? 1 : 2}
                   min={0}
                   onCommit={(n) => onUpdateItem(idx, { qty: n })}
                 />
@@ -622,6 +622,7 @@ function RecipeSection({
                   onChange={(e) => onUpdateItem(idx, { unit: e.target.value as RecipeUnit })}
                 >
                   <option value="ml">ml</option>
+                  <option value="g">g</option>
                   <option value="dash">dash</option>
                   <option value="drop">gota</option>
                   <option value="un">un</option>

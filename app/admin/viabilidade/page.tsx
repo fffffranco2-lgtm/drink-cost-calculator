@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import {
   applyPsychRounding,
@@ -66,10 +66,8 @@ export default function ViabilidadePage() {
   const [sortKey, setSortKey] = useState<"name" | "price" | "cost" | "margin">("margin");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
-  // Guarda o estado remoto completo para merge no save (evita sobrescrever drinks/ingredientes)
-  const remoteStateRef = useRef<Record<string, unknown>>({});
-  const userIdRef = useRef<string | null>(null);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Liberado após hidratação para que o effect de save não dispare antes do load.
+  const [authed, setAuthed] = useState(false);
 
   /* Busca dados do Supabase */
   useEffect(() => {
@@ -78,7 +76,6 @@ export default function ViabilidadePage() {
       if (!supabase) { setLoading(false); return; }
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { setLoading(false); return; }
-      userIdRef.current = "shared";
 
       const { data } = await supabase
         .from("app_state")
@@ -88,7 +85,6 @@ export default function ViabilidadePage() {
 
       if (data?.state) {
         const s = data.state as Record<string, unknown>;
-        remoteStateRef.current = s;
         setIngredients(normalizeIngredients(s.ingredients));
         setDrinks(Array.isArray(s.drinks) ? s.drinks.map(normalizeDrink) : []);
         if (s.settings && typeof s.settings === "object") {
@@ -98,26 +94,37 @@ export default function ViabilidadePage() {
           setParams({ ...DEFAULT_PARAMS, ...(s.viabilidadeParams as Partial<Params>) });
         }
       }
+
       setLoading(false);
+      setAuthed(true);
     })();
   }, []);
 
-  /* Persiste params no Supabase com debounce */
+  /* Persiste só viabilidadeParams dentro do estado compartilhado.
+     Faz um read-before-write para não sobrescrever drinks/ingredientes com dados
+     stale. Não inclui updated_at para não invalidar o token CAS da página admin. */
   useEffect(() => {
-    if (!userIdRef.current) return;
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(async () => {
+    if (!authed) return;
+
+    const timer = setTimeout(async () => {
       const supabase = getSupabaseBrowserClient();
-      if (!supabase || !userIdRef.current) return;
-      const newState = { ...remoteStateRef.current, viabilidadeParams: params };
-      // Não inclui updated_at para não invalidar o token de CAS da página admin.
+      if (!supabase) return;
+
+      const { data } = await supabase
+        .from("app_state")
+        .select("state")
+        .eq("user_id", "shared")
+        .maybeSingle();
+
+      const current = (data?.state as Record<string, unknown>) ?? {};
       await supabase.from("app_state").upsert({
-        user_id: userIdRef.current,
-        state: newState,
+        user_id: "shared",
+        state: { ...current, viabilidadeParams: params },
       });
-      remoteStateRef.current = newState;
     }, SAVE_DEBOUNCE_MS);
-  }, [params]);
+
+    return () => clearTimeout(timer);
+  }, [authed, params]);
 
   /* Drinks do cardápio público com custo e preço calculados */
   const drinkRows = useMemo(() => {

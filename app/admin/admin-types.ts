@@ -8,10 +8,10 @@ import { clamp } from "@/lib/utils";
 /* ---------------------- tipos básicos ---------------------- */
 
 /** Unidades que a receita pode usar */
-export type RecipeUnit = "ml" | "un" | "dash" | "drop";
+export type RecipeUnit = "ml" | "un" | "dash" | "drop" | "g";
 
 /** Como precificar um ingrediente */
-export type PricingModel = "by_ml" | "by_bottle" | "by_unit";
+export type PricingModel = "by_ml" | "by_bottle" | "by_unit" | "by_weight";
 
 export type IngredientCategory =
   | "destilados_base"
@@ -59,6 +59,11 @@ export type Ingredient = {
 
   // by_unit:
   costPerUnit?: number; // R$ por unidade
+
+  // by_weight:
+  packagePrice?: number; // R$ da embalagem
+  packageG?: number;     // gramas nominais
+  yieldG?: number;       // gramas utilizáveis
 
   notes?: string;
 };
@@ -205,7 +210,19 @@ export function computeCostPerMl(ing: Ingredient): number | null {
     if (price <= 0 || effectiveYield <= 0) return 0;
     return price / effectiveYield;
   }
-  return null; // by_unit não tem R$/ml
+  return null; // by_unit / by_weight não têm R$/ml
+}
+
+/** Calcula R$/g de um ingrediente com modelo by_weight */
+export function computeCostPerG(ing: Ingredient): number | null {
+  if (ing.pricingModel !== "by_weight") return null;
+  const price = ing.packagePrice ?? 0;
+  const packageG = ing.packageG ?? 0;
+  const yieldG = ing.yieldG ?? packageG;
+  const lossPct = clamp(ing.lossPct ?? 0, 0, 100);
+  const effectiveYield = yieldG * (1 - lossPct / 100);
+  if (price <= 0 || effectiveYield <= 0) return 0;
+  return price / effectiveYield;
 }
 
 export function computeItemCost(item: RecipeItem, ing: Ingredient | undefined, settings: Settings): number {
@@ -214,6 +231,12 @@ export function computeItemCost(item: RecipeItem, ing: Ingredient | undefined, s
   if (item.unit === "un") {
     const cpu = ing.pricingModel === "by_unit" ? (ing.costPerUnit ?? 0) : 0;
     return item.qty * cpu;
+  }
+
+  if (item.unit === "g") {
+    const cpg = computeCostPerG(ing);
+    if (cpg === null) return 0;
+    return item.qty * cpg;
   }
 
   const ml =
@@ -259,8 +282,10 @@ function normalizeIngredientCategory(raw: unknown): IngredientCategory {
 }
 
 export function normalizeIngredient(raw: any): Ingredient {
-  const pricingModel: PricingModel =
-    raw?.pricingModel === "by_ml" || raw?.pricingModel === "by_unit" ? raw.pricingModel : "by_bottle";
+  const VALID_MODELS: PricingModel[] = ["by_ml", "by_bottle", "by_unit", "by_weight"];
+  const pricingModel: PricingModel = VALID_MODELS.includes(raw?.pricingModel)
+    ? raw.pricingModel
+    : "by_bottle";
 
   return {
     id: String(raw?.id || uid("ing")),
@@ -273,6 +298,9 @@ export function normalizeIngredient(raw: any): Ingredient {
     yieldMl: parseOptionalNumber(raw?.yieldMl),
     lossPct: parseOptionalNumber(raw?.lossPct),
     costPerUnit: parseOptionalNumber(raw?.costPerUnit),
+    packagePrice: parseOptionalNumber(raw?.packagePrice),
+    packageG: parseOptionalNumber(raw?.packageG),
+    yieldG: parseOptionalNumber(raw?.yieldG),
     notes: raw?.notes ? String(raw.notes) : undefined,
   };
 }
@@ -344,7 +372,7 @@ function sortRecipeItems(
     : items;
 
   return [...filtered].sort((a, b) => {
-    const group = (unit: RecipeUnit) => (unit === "ml" ? 0 : unit === "dash" ? 1 : 2);
+    const group = (unit: RecipeUnit) => (unit === "ml" || unit === "g" ? 0 : unit === "dash" ? 1 : 2);
     const groupDiff = group(a.unit) - group(b.unit);
     if (groupDiff !== 0) return groupDiff;
 
@@ -369,7 +397,7 @@ export function formatRecipeItemsForDisplay(
       if (!name) return null;
 
       const unit = toDisplayUnit(item.unit);
-      const decimals = item.unit === "ml" ? 0 : 2;
+      const decimals = item.unit === "ml" ? 0 : item.unit === "g" ? 1 : 2;
       const qty = formatQty(item.qty, decimals);
       const garnishSuffix = garnishTag && ingredient?.category === "garnish" ? " (garnish)" : "";
       const dashSuffix = item.qty > 1 ? "dashes" : "dash";

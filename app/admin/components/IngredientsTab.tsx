@@ -15,6 +15,7 @@ import {
   INGREDIENT_CATEGORIES,
   INGREDIENT_CATEGORY_LABEL,
   computeCostPerMl,
+  computeCostPerG,
   computeItemCost,
 } from "@/app/admin/admin-types";
 
@@ -82,8 +83,13 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 /* ─── CalcHero ───────────────────────────────────────────────────────── */
 
 function CalcHero({ ingredient }: { ingredient: Ingredient }) {
-  const cpm = computeCostPerMl(ingredient);
-  const hasValue = cpm !== null && cpm > 0;
+  const isByWeight = ingredient.pricingModel === "by_weight";
+  const isByUnit = ingredient.pricingModel === "by_unit";
+  const cpm = isByWeight || isByUnit ? null : computeCostPerMl(ingredient);
+  const cpg = isByWeight ? computeCostPerG(ingredient) : null;
+  const costValue = isByWeight ? cpg : cpm;
+  const hasValue = costValue !== null && costValue > 0;
+  const unitLabel = isByWeight ? "g" : "ml";
 
   let formulaLine = "";
   if (ingredient.pricingModel === "by_bottle" && ingredient.bottlePrice && ingredient.bottleMl) {
@@ -93,6 +99,11 @@ function CalcHero({ ingredient }: { ingredient: Ingredient }) {
     formulaLine = `${ingredient.bottlePrice.toFixed(2)} ÷ (${effectiveYield.toFixed(0)}${lossPct > 0 ? ` × ${((100 - lossPct) / 100).toFixed(2)}` : ""})`;
   } else if (ingredient.pricingModel === "by_ml" && ingredient.costPerMl) {
     formulaLine = `${formatBRL(ingredient.costPerMl)} / ml (direto)`;
+  } else if (isByWeight && ingredient.packagePrice && ingredient.packageG) {
+    const yieldG = ingredient.yieldG ?? ingredient.packageG;
+    const lossPct = ingredient.lossPct ?? 0;
+    const effectiveYield = yieldG * (1 - lossPct / 100);
+    formulaLine = `${ingredient.packagePrice.toFixed(2)} ÷ (${effectiveYield.toFixed(0)}g${lossPct > 0 ? ` × ${((100 - lossPct) / 100).toFixed(2)}` : ""})`;
   }
 
   return (
@@ -119,26 +130,28 @@ function CalcHero({ ingredient }: { ingredient: Ingredient }) {
           letterSpacing: "0.08em",
         }}
       >
-        Custo/ml
+        {isByUnit ? "Custo/un" : `Custo/${unitLabel}`}
       </span>
 
       <span>
         <span
           style={{
-            ...mono(ingredient.pricingModel === "by_unit" ? 20 : hasValue ? 32 : 22),
+            ...mono(isByUnit ? 20 : hasValue ? 32 : 22),
             fontWeight: 600,
             letterSpacing: "-0.02em",
             lineHeight: 1,
           }}
         >
-          {ingredient.pricingModel === "by_unit"
-            ? "N/A"
+          {isByUnit
+            ? ingredient.costPerUnit != null && ingredient.costPerUnit > 0
+              ? formatBRL(ingredient.costPerUnit)
+              : "N/A"
             : hasValue
-            ? `${formatBRL(cpm!)}`
+            ? `${formatBRL(costValue!)}`
             : "Sem preço"}
         </span>
-        {hasValue && ingredient.pricingModel !== "by_unit" && (
-          <span style={{ fontSize: 14, opacity: 0.65, marginLeft: 2, fontWeight: 500 }}>/ml</span>
+        {hasValue && !isByUnit && (
+          <span style={{ fontSize: 14, opacity: 0.65, marginLeft: 2, fontWeight: 500 }}>/{unitLabel}</span>
         )}
       </span>
 
@@ -307,6 +320,66 @@ function IngredientForm({
           />
         </Field>
       </div>
+    );
+  }
+
+  if (model === "by_weight") {
+    return (
+      <>
+        {/* Embalagem */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 0, marginBottom: 20 }}>
+          <span style={sectTitle()}>Embalagem</span>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="Preço (R$)">
+              <NumberField
+                style={fieldInput}
+                value={ingredient.packagePrice ?? 0}
+                decimals={2}
+                min={0}
+                onCommit={(n) => onUpdate({ packagePrice: n })}
+              />
+            </Field>
+            <Field label="g nominal">
+              <NumberField
+                style={fieldInput}
+                value={ingredient.packageG ?? 0}
+                decimals={0}
+                min={0}
+                inputMode="numeric"
+                onCommit={(n) => onUpdate({ packageG: n })}
+              />
+            </Field>
+          </div>
+        </div>
+
+        {/* Rendimento */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 0, marginBottom: 20 }}>
+          <span style={sectTitle()}>Rendimento real</span>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <Field label="yield (g)">
+              <NumberField
+                style={fieldInput}
+                value={ingredient.yieldG ?? (ingredient.packageG ?? 0)}
+                decimals={0}
+                min={0}
+                inputMode="numeric"
+                onCommit={(n) => onUpdate({ yieldG: n })}
+              />
+            </Field>
+            <Field label="perdas (%)">
+              <NumberField
+                style={fieldInput}
+                value={ingredient.lossPct ?? 0}
+                decimals={0}
+                min={0}
+                max={100}
+                inputMode="numeric"
+                onCommit={(n) => onUpdate({ lossPct: n })}
+              />
+            </Field>
+          </div>
+        </div>
+      </>
     );
   }
 
@@ -616,9 +689,13 @@ export function IngredientsTab({
                       const active = ing.id === activeIngredientId;
                       const usedIn = drinkUsageByIngredient.get(ing.id) ?? 0;
 
+                      const cpg = computeCostPerG(ing);
+
                       const modelLabel =
                         ing.pricingModel === "by_bottle" && ing.bottlePrice && ing.bottleMl
                           ? `R$ ${ing.bottlePrice.toFixed(2)} / ${ing.bottleMl}ml`
+                          : ing.pricingModel === "by_weight" && ing.packagePrice && ing.packageG
+                          ? `R$ ${ing.packagePrice.toFixed(2)} / ${ing.packageG}g`
                           : ing.pricingModel === "by_ml"
                           ? "R$/ml direto"
                           : ing.pricingModel === "by_unit"
@@ -630,8 +707,12 @@ export function IngredientsTab({
                           ? ing.costPerUnit != null && ing.costPerUnit > 0
                             ? `${formatBRL(ing.costPerUnit)}/un`
                             : null
+                          : ing.pricingModel === "by_weight"
+                          ? cpg != null && cpg > 0
+                            ? `${formatBRL(cpg)}/g`
+                            : null
                           : cpm != null && cpm > 0
-                          ? `${formatBRL(cpm)}`
+                          ? `${formatBRL(cpm)}/ml`
                           : null;
 
                       return (
@@ -751,6 +832,7 @@ export function IngredientsTab({
                 <SegmentedControl
                   options={[
                     { value: "by_bottle", label: "Por garrafa" },
+                    { value: "by_weight", label: "Por peso (g)" },
                     { value: "by_ml", label: "R$/ml" },
                     { value: "by_unit", label: "Por unidade" },
                   ]}
